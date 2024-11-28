@@ -15,6 +15,10 @@
 	<depend>pcl_ros</depend>
 	<depend>visualization_msgs</depend>
 	<depend>PCL</depend>
+	<depend>tf2</depend>
+	<depend>tf2_ros</depend>
+	<depend>tf2_sensor_msgs</depend>
+
 
 
   <test_depend>ament_lint_auto</test_depend>

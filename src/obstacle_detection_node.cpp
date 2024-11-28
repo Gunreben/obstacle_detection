@@ -7,13 +7,15 @@
 #include <pcl/segmentation/extract_clusters.h>
 #include <pcl/common/common.h> 
 #include <random>
+#include "pointcloud_processing_node.cpp"
 
-class ObstacleDetectionNode : public rclcpp::Node
+class ObstacleDetectionNode : public PointCloudProcessingNode
 {
 public:
   ObstacleDetectionNode()
-  : Node("obstacle_detection_node")
+  : PointCloudProcessingNode("obstacle_detection_node")
   {
+
     // Declare and get parameters
     this->declare_parameter<std::string>("input_topic", "/filtered_fov_points");
     this->declare_parameter<std::string>("cluster_topic", "/detected_obstacles");
@@ -44,10 +46,17 @@ public:
 private:
   void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr cloud_msg)
   {
-    // Convert ROS2 message to PCL PointCloud
-    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>());
-    pcl::fromROSMsg(*cloud_msg, *cloud);
+    // Transform the point cloud to 'base_link' frame
+    sensor_msgs::msg::PointCloud2 cloud_in_base_link;
+    if (!transformPointCloud(cloud_msg, cloud_in_base_link, "base_link"))
+    {
+      RCLCPP_WARN(this->get_logger(), "Skipping point cloud processing due to transform failure.");
+      return;
+    }
 
+    // Convert to PCL and proceed with processing
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>());
+    pcl::fromROSMsg(cloud_in_base_link, *cloud);
     // Downsample the point cloud (optional)
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>());
     if (use_downsampling_)
@@ -85,9 +94,9 @@ private:
     for (const auto& indices : cluster_indices)
     {
       // Assign a random color to each cluster
-      uint8_t r = static_cast<uint8_t>(rand() % 256);
-      uint8_t g = static_cast<uint8_t>(rand() % 256);
-      uint8_t b = static_cast<uint8_t>(rand() % 256);
+      //uint8_t r = static_cast<uint8_t>(rand() % 256);
+      //uint8_t g = static_cast<uint8_t>(rand() % 256);
+      //uint8_t b = static_cast<uint8_t>(rand() % 256);
 
       // Create a new point cloud for each cluster
       pcl::PointCloud<pcl::PointXYZRGB>::Ptr cluster_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
@@ -98,9 +107,9 @@ private:
         point_rgb.x = point.x;
         point_rgb.y = point.y;
         point_rgb.z = point.z;
-        point_rgb.r = r;
-        point_rgb.g = g;
-        point_rgb.b = b;
+        //point_rgb.r = r;
+        //point_rgb.g = g;
+        //point_rgb.b = b;
         cluster_cloud->points.push_back(point_rgb);
       }
 
@@ -110,6 +119,22 @@ private:
         RCLCPP_WARN(this->get_logger(), "Encountered an empty cluster. Skipping...");
         continue; // Skip processing this cluster
       }
+
+      // Seed the random number generator with the cluster ID for consistent coloring
+      std::mt19937 gen(cluster_id); // Standard mersenne_twister_engine seeded with cluster_id
+      std::uniform_int_distribution<> dis(0, 255);
+      uint8_t r = static_cast<uint8_t>(dis(gen));
+      uint8_t g = static_cast<uint8_t>(dis(gen));
+      uint8_t b = static_cast<uint8_t>(dis(gen));
+
+      // Assign the color to each point in the cluster
+      for (auto& point_rgb : cluster_cloud->points)
+      {
+        point_rgb.r = r;
+        point_rgb.g = g;
+        point_rgb.b = b;
+      }
+
 
       // Add cluster cloud to the aggregated cloud
       *cloud_clusters += *cluster_cloud;
@@ -139,7 +164,7 @@ private:
       marker.color.g = static_cast<float>(g) / 255.0;
       marker.color.b = static_cast<float>(b) / 255.0;
       marker.color.a = 0.5; // Semi-transparent
-      marker.lifetime = rclcpp::Duration::from_seconds(0.01);
+      marker.lifetime = rclcpp::Duration::from_seconds(0);
 
       marker_array.markers.push_back(marker);
 

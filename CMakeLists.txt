@@ -39,10 +39,7 @@ ament_target_dependencies(obstacle_detection_node
 target_link_libraries(obstacle_detection_node ${PCL_LIBRARIES})
 
 install(TARGETS obstacle_detection_node
-  DESTINATION lib/${PROJECT_NAME}
-  DESTINATION include/${PROJECT_NAME}
-  )
-
+  DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

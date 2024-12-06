@@ -3,24 +3,28 @@
 <package format="3">
   <name>obstacle_detection</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>A package for detecting obstacles using PointCloud data with both CPU and GPU nodes.</description>
   <maintainer email="gunreben@wifa.uni-leipzig.de">user</maintainer>
-  <license>TODO: License declaration</license>
+  <license>Apache 2.0</license> 
 
+  <!-- Build tool dependencies -->
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-	<depend>rclcpp</depend>
-	<depend>sensor_msgs</depend>
-	<depend>pcl_conversions</depend>
-	<depend>pcl_ros</depend>
-	<depend>visualization_msgs</depend>
-	<depend>PCL</depend>
-	<depend>tf2</depend>
-	<depend>tf2_ros</depend>
-	<depend>tf2_sensor_msgs</depend>
+  <!-- Package dependencies -->
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>pcl_conversions</depend>
+  <depend>pcl_ros</depend>
+  <depend>visualization_msgs</depend>
+  <depend>PCL</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_sensor_msgs</depend>
 
+  <!-- System dependency for CUDA support -->
+  <exec_depend>cuda</exec_depend>
 
-
+  <!-- Testing dependencies -->
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
@@ -28,3 +32,4 @@
     <build_type>ament_cmake</build_type>
   </export>
 </package>
+

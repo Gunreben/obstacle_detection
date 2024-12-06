@@ -2,10 +2,11 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <pcl_conversions/pcl_conversions.h>
-#include <pcl/filters/voxel_grid.h>
-#include <pcl/search/kdtree.h>
-#include <pcl/segmentation/extract_clusters.h>
-#include <pcl/common/common.h> 
+#include <pcl/gpu/containers/device_array.h>
+#include <pcl/gpu/filters/voxel_grid.h>
+#include <pcl/gpu/octree/octree.h>
+#include <pcl/gpu/segmentation/gpu_euclidean_clustering.h>
+#include <pcl/common/common.h>
 #include <random>
 #include <pcl_ros/transforms.hpp>
 #include <tf2_ros/transform_listener.h>
@@ -13,17 +14,17 @@
 #include <tf2_ros/create_timer_ros.h>
 #include <tf2_sensor_msgs/tf2_sensor_msgs.hpp>
 
-class ObstacleDetectionNode : public rclcpp::Node
+class ObstacleDetectionNodeGPU : public rclcpp::Node
 {
 public:
-  ObstacleDetectionNode()
-  : Node("obstacle_detection_node")
+  ObstacleDetectionNodeGPU()
+  : Node("obstacle_detection_node_gpu")
   {
     // Declare and get parameters
     this->declare_parameter<std::string>("input_topic", "/filtered_fov_points");
-    this->declare_parameter<std::string>("cluster_topic", "/detected_obstacles");
-    this->declare_parameter<std::string>("marker_topic", "/obstacle_markers");
-    this->declare_parameter<std::string>("target_frame", "base_link");  // Add target frame parameter
+    this->declare_parameter<std::string>("cluster_topic", "/detected_obstacles_gpu");
+    this->declare_parameter<std::string>("marker_topic", "/obstacle_markers_gpu");
+    this->declare_parameter<std::string>("target_frame", "base_link");
     this->declare_parameter<double>("cluster_tolerance", 0.5);
     this->declare_parameter<int>("min_cluster_size", 50);
     this->declare_parameter<int>("max_cluster_size", 10000);
@@ -47,7 +48,7 @@ public:
     // Subscriber and Publishers
     sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
       input_topic_, 10,
-      std::bind(&ObstacleDetectionNode::pointCloudCallback, this, std::placeholders::_1));
+      std::bind(&ObstacleDetectionNodeGPU::pointCloudCallback, this, std::placeholders::_1));
     cluster_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(cluster_topic_, 10);
     marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(marker_topic_, 10);
   }
@@ -59,7 +60,7 @@ private:
       // Transform point cloud to target frame
       sensor_msgs::msg::PointCloud2 cloud_transformed;
       geometry_msgs::msg::TransformStamped transform_stamped;
-      
+
       // Look up transform from source frame to target frame
       transform_stamped = tf_buffer_->lookupTransform(
         target_frame_, cloud_msg->header.frame_id,
@@ -72,33 +73,38 @@ private:
       pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>());
       pcl::fromROSMsg(cloud_transformed, *cloud);
 
-      // Rest of the processing remains the same, but now using transformed cloud
-      pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>());
+      // Upload point cloud to GPU
+      pcl::gpu::DeviceArray<pcl::PointXYZ> cloud_device;
+      cloud_device.upload(cloud->points);
+
+      // Downsample the point cloud using GPU VoxelGrid
+      pcl::gpu::DeviceArray<pcl::PointXYZ> cloud_filtered_device;
       if (use_downsampling_)
       {
-        pcl::VoxelGrid<pcl::PointXYZ> vg;
-        vg.setInputCloud(cloud);
-        vg.setLeafSize(voxel_leaf_size_, voxel_leaf_size_, voxel_leaf_size_);
-        vg.filter(*cloud_filtered);
+        pcl::gpu::VoxelGrid voxel_grid;
+        voxel_grid.setLeafSize(voxel_leaf_size_, voxel_leaf_size_, voxel_leaf_size_);
+        voxel_grid.setInput(cloud_device);
+        voxel_grid.filter(cloud_filtered_device);
       }
       else
       {
-        cloud_filtered = cloud;
+        cloud_filtered_device = cloud_device;
       }
 
-      // Create the KdTree object for the search method of the extraction
-      pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>());
-      tree->setInputCloud(cloud_filtered);
+      // Build octree on GPU
+      pcl::gpu::Octree::Ptr octree(new pcl::gpu::Octree());
+      octree->setCloud(cloud_filtered_device);
+      octree->build();
 
-      // Perform clustering
+      // Perform clustering on GPU
+      pcl::gpu::EuclideanClusterExtraction gpu_ec;
+      gpu_ec.setClusterTolerance(cluster_tolerance_);
+      gpu_ec.setMinClusterSize(min_cluster_size_);
+      gpu_ec.setMaxClusterSize(max_cluster_size_);
+      gpu_ec.setSearchMethod(octree);
+
       std::vector<pcl::PointIndices> cluster_indices;
-      pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
-      ec.setClusterTolerance(cluster_tolerance_);
-      ec.setMinClusterSize(min_cluster_size_);
-      ec.setMaxClusterSize(max_cluster_size_);
-      ec.setSearchMethod(tree);
-      ec.setInputCloud(cloud_filtered);
-      ec.extract(cluster_indices);
+      gpu_ec.extract(cluster_indices);
 
       // Prepare to publish clusters and markers
       visualization_msgs::msg::MarkerArray marker_array;
@@ -110,9 +116,19 @@ private:
       {
         // Create a new point cloud for each cluster
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr cluster_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
-        for (const auto& idx : indices.indices)
+        pcl::gpu::DeviceArray<int> device_indices(indices.indices.size());
+        device_indices.upload(indices.indices);
+
+        // Extract cluster points from GPU device array
+        pcl::gpu::DeviceArray<pcl::PointXYZ> cluster_device;
+        pcl::gpu::copyPointCloud(cloud_filtered_device, device_indices, cluster_device);
+
+        // Download cluster points to CPU
+        std::vector<pcl::PointXYZ> cluster_points;
+        cluster_device.download(cluster_points);
+
+        for (const auto& point : cluster_points)
         {
-          pcl::PointXYZ point = cloud_filtered->points[idx];
           pcl::PointXYZRGB point_rgb;
           point_rgb.x = point.x;
           point_rgb.y = point.y;
@@ -150,7 +166,7 @@ private:
         visualization_msgs::msg::Marker marker;
         marker.header.frame_id = target_frame_;  // Use target frame for markers
         marker.header.stamp = cloud_msg->header.stamp;
-        marker.ns = "obstacles";
+        marker.ns = "obstacles_gpu";
         marker.id = cluster_id;
         marker.type = visualization_msgs::msg::Marker::CUBE;
         marker.action = visualization_msgs::msg::Marker::ADD;
@@ -159,6 +175,7 @@ private:
         marker.pose.position.z = (min_pt.z + max_pt.z) / 2.0;
         marker.pose.orientation.x = 0.0;  // Identity orientation
         marker.pose.orientation.y = 0.0;
+        marker.pose.orientation.z = 0.0;
         marker.pose.orientation.w = 1.0;
         marker.scale.x = std::max((max_pt.x - min_pt.x), 0.1f);
         marker.scale.y = std::max((max_pt.y - min_pt.y), 0.1f);
@@ -167,7 +184,7 @@ private:
         marker.color.g = static_cast<float>(g) / 255.0;
         marker.color.b = static_cast<float>(b) / 255.0;
         marker.color.a = 0.5;
-        marker.lifetime = rclcpp::Duration::from_seconds(0.1);
+        marker.lifetime = rclcpp::Duration::from_seconds(0);
 
         marker_array.markers.push_back(marker);
         cluster_id++;
@@ -209,7 +226,8 @@ private:
 int main(int argc, char *argv[])
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<ObstacleDetectionNode>());
+  rclcpp::spin(std::make_shared<ObstacleDetectionNodeGPU>());
   rclcpp::shutdown();
   return 0;
 }
+

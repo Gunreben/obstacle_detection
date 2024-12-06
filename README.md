@@ -1,14 +1,14 @@
-Obstacle Detection ROS 2 Package
+# Obstacle Detection ROS 2 Package
 
 This repository contains a ROS 2 package for obstacle detection based on point cloud clustering. It provides two nodes: a CPU-based implementation using standard PCL Euclidean clustering, and a CUDA-accelerated version for faster performance on systems with Jetson Platform with Jetpack 6.0 (General NVIDIA GPU Compatibility not tested, used branch jp_6.x of cuPCL: https://github.com/NVIDIA-AI-IOT/cuPCL)
 
-Features:
+## Features:
 
     CPU Node: Leverages the PCL library's EuclideanClusterExtraction for identifying clusters in 3D point clouds.
     CUDA Node: Utilizes a CUDA-based clustering approach to accelerate segmentation, potentially offering significant speed-ups on supported hardware.
     Transforms and Visualization: Automatically transforms incoming point clouds into a target frame and publishes visualization markers (bounding boxes) around detected clusters.
 
-Requirements
+## Requirements
 
     ROS 2 (tested on Humble)
     PCL (Point Cloud Library)
@@ -16,7 +16,7 @@ Requirements
     tf2 and tf2_ros for handling transforms
     rclcpp, sensor_msgs, visualization_msgs for ROS integration
 
-Installation
+## Installation
 
     Clone the repository into your ROS 2 workspace:
 
@@ -27,7 +27,7 @@ Install dependencies: Make sure all necessary dependencies are installed. For ex
 
 sudo apt-get update
 sudo apt-get install -y ros-${ROS_DISTRO}-pcl-ros ros-${ROS_DISTRO}-tf2-ros ros-${ROS_DISTRO}-visualization-msgs
-# Install CUDA if not already installed. On Jetson devices, CUDA is generally pre-installed.
+Install CUDA if not already installed. On Jetson devices, CUDA is generally pre-installed.
 
 Build the package:
 
@@ -35,13 +35,13 @@ Build the package:
     colcon build --packages-select obstacle_detection
     source install/setup.bash
 
-Running the Nodes
+## Running the Nodes
 
-CPU Node:
+### CPU Node:
 
 ros2 run obstacle_detection obstacle_detection_node
 
-CUDA Node:
+### CUDA Node:
 
 ros2 run obstacle_detection obstacle_detection_cuda
 

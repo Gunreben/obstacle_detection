@@ -27,10 +27,14 @@ public:
     this->declare_parameter<std::string>("marker_topic", "/obstacle_markers");
     this->declare_parameter<std::string>("target_frame", "base_link");
     this->declare_parameter<double>("cluster_tolerance", 0.5);
-    this->declare_parameter<int>("min_cluster_size", 50);
-    this->declare_parameter<int>("max_cluster_size", 10000);
-    this->declare_parameter<double>("voxel_leaf_size", 0.1);
-    this->declare_parameter<bool>("use_downsampling", true);
+    this->declare_parameter<int>("min_cluster_size", 20);
+    this->declare_parameter<int>("max_cluster_size", 100000);
+    this->declare_parameter<double>("voxel_leaf_size_x", 0.7);
+    this->declare_parameter<double>("voxel_leaf_size_y", 0.7);
+    this->declare_parameter<double>("voxel_leaf_size_z", 0.7);
+    this->declare_parameter<int>("count_threshold", 10);
+    //not sure if this is actually makes sense, false on default:
+    this->declare_parameter<bool>("use_cpu_pre_downsampling", false); 
 
     input_topic_ = this->get_parameter("input_topic").as_string();
     cluster_topic_ = this->get_parameter("cluster_topic").as_string();
@@ -39,8 +43,11 @@ public:
     cluster_tolerance_ = this->get_parameter("cluster_tolerance").as_double();
     min_cluster_size_ = this->get_parameter("min_cluster_size").as_int();
     max_cluster_size_ = this->get_parameter("max_cluster_size").as_int();
-    voxel_leaf_size_ = this->get_parameter("voxel_leaf_size").as_double();
-    use_downsampling_ = this->get_parameter("use_downsampling").as_bool();
+    voxel_leaf_size_x_ = this->get_parameter("voxel_leaf_size_x").as_double();
+    voxel_leaf_size_y_ = this->get_parameter("voxel_leaf_size_y").as_double();
+    voxel_leaf_size_z_ = this->get_parameter("voxel_leaf_size_z").as_double();
+    count_threshold_ = this->get_parameter("count_threshold").as_int();
+    use_cpu_pre_downsampling_ = this->get_parameter("use_cpu_pre_downsampling").as_bool();
 
     // Initialize TF buffer and listener
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
@@ -72,13 +79,13 @@ private:
       pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>());
       pcl::fromROSMsg(cloud_transformed, *cloud);
 
-      // Optional downsampling
+      // Optional downsampling, check if necessary anyways. 
       pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>());
-      if (use_downsampling_)
+      if (use_cpu_pre_downsampling_)
       {
         pcl::VoxelGrid<pcl::PointXYZ> vg;
         vg.setInputCloud(cloud);
-        vg.setLeafSize(voxel_leaf_size_, voxel_leaf_size_, voxel_leaf_size_);
+        vg.setLeafSize(voxel_leaf_size_x_, voxel_leaf_size_y_, voxel_leaf_size_z_);
         vg.filter(*cloud_filtered);
       }
       else
@@ -129,18 +136,10 @@ private:
       extractClusterParam_t ecp;
       ecp.minClusterSize = static_cast<unsigned int>(min_cluster_size_);
       ecp.maxClusterSize = static_cast<unsigned int>(max_cluster_size_);
-
-      //ecp.voxelX = static_cast<float>(voxel_leaf_size_);
-      //ecp.voxelY = static_cast<float>(voxel_leaf_size_);
-      //ecp.voxelZ = static_cast<float>(voxel_leaf_size_);
-
-
-      // TO-DO: Make those to rosparams, find reasonable values for LiDAR-Data.
-      //ecp.countThreshold = static_cast<unsigned int>(std::max(1, static_cast<int>(cluster_tolerance_ * 40)));
-      ecp.voxelX = 0.5f;
-      ecp.voxelY = 0.2f;
-      ecp.voxelZ = 0.5f;
-      ecp.countThreshold = 20;
+      ecp.voxelX = static_cast<float>(voxel_leaf_size_x_);
+      ecp.voxelY = static_cast<float>(voxel_leaf_size_y_);
+      ecp.voxelZ = static_cast<float>(voxel_leaf_size_z_);
+      ecp.countThreshold = count_threshold_;
 
 
       cudaExtractCluster cudaec(stream);
@@ -152,7 +151,7 @@ private:
 
       // indexEC[0] = number of clusters
       unsigned int num_clusters = indexEC[0];
-      RCLCPP_INFO(this->get_logger(), "Found %u clusters using CUDA clustering.", num_clusters);
+      //RCLCPP_INFO(this->get_logger(), "Found %u clusters using CUDA clustering.", num_clusters);
 
       // Construct a combined colored cluster cloud
       pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_clusters(new pcl::PointCloud<pcl::PointXYZRGB>());
@@ -256,8 +255,11 @@ private:
   double cluster_tolerance_;
   int min_cluster_size_;
   int max_cluster_size_;
-  double voxel_leaf_size_;
-  bool use_downsampling_;
+  double voxel_leaf_size_x_;
+  double voxel_leaf_size_y_;
+  double voxel_leaf_size_z_;
+  int count_threshold_;
+  bool use_cpu_pre_downsampling_;
 };
 
 int main(int argc, char *argv[])

@@ -1,0 +1,25 @@
+# Parameters for the CPU-based obstacle detection node
+# Launch with: ros2 launch obstacle_detection obstacle_detection.launch.py
+
+obstacle_detection_node:
+  ros__parameters:
+    # ── Topics ────────────────────────────────────────────────────────────────
+    input_topic:   "/filtered_fov_points"   # input PointCloud2 topic
+    cluster_topic: "/detected_obstacles"    # coloured cluster cloud output
+    marker_topic:  "/obstacle_markers"      # bounding-box MarkerArray output
+
+    # ── Frame ─────────────────────────────────────────────────────────────────
+    target_frame: "base_link"
+
+    # ── Euclidean cluster parameters ─────────────────────────────────────────
+    # Maximum spatial distance (m) between points in the same cluster
+    cluster_tolerance: 0.5
+
+    # Cluster size bounds (points)
+    min_cluster_size: 50
+    max_cluster_size: 10000
+
+    # ── Voxel downsampling (CPU pre-filter) ──────────────────────────────────
+    use_downsampling: true
+    # Voxel leaf size (m) – smaller = more precise but slower
+    voxel_leaf_size: 0.1

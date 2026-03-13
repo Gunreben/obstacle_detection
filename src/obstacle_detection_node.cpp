@@ -159,6 +159,7 @@ private:
         marker.pose.position.z = (min_pt.z + max_pt.z) / 2.0;
         marker.pose.orientation.x = 0.0;  // Identity orientation
         marker.pose.orientation.y = 0.0;
+        marker.pose.orientation.z = 0.0;
         marker.pose.orientation.w = 1.0;
         marker.scale.x = std::max((max_pt.x - min_pt.x), 0.1f);
         marker.scale.y = std::max((max_pt.y - min_pt.y), 0.1f);

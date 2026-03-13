@@ -184,7 +184,7 @@ private:
         marker.color.g = static_cast<float>(g) / 255.0;
         marker.color.b = static_cast<float>(b) / 255.0;
         marker.color.a = 0.5;
-        marker.lifetime = rclcpp::Duration::from_seconds(0);
+        marker.lifetime = rclcpp::Duration::from_seconds(0.1);
 
         marker_array.markers.push_back(marker);
         cluster_id++;

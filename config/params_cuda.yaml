@@ -1,0 +1,41 @@
+# Parameters for the CUDA-based obstacle detection node (RTX desktop GPU)
+# Launch with: ros2 launch obstacle_detection obstacle_detection_cuda.launch.py
+#
+# The CUDA node uses a voxel-grid euclidean cluster on the GPU:
+#   1. Points are quantised into voxels of size voxel_leaf_size_x/y/z.
+#   2. Voxels with fewer than count_threshold points are discarded (noise filter).
+#   3. Connected voxels (26-neighbourhood) form a cluster.
+#   4. Clusters outside [min_cluster_size, max_cluster_size] are dropped.
+#
+# Tuning guide for LiDAR data:
+#   • voxel_leaf_size_*  – controls spatial tolerance; start at 0.3–0.5 m for
+#                          outdoor scenes, 0.1–0.2 m for indoor.
+#   • count_threshold    – raise to remove sparse noise voxels (rain, dust).
+#   • min_cluster_size   – raise to discard small false detections.
+
+obstacle_detection_cuda_node:
+  ros__parameters:
+    # ── Topics ────────────────────────────────────────────────────────────────
+    input_topic:   "/filtered_fov_points"
+    cluster_topic: "/detected_obstacles"
+    marker_topic:  "/obstacle_markers"
+
+    # ── Frame ─────────────────────────────────────────────────────────────────
+    target_frame: "base_link"
+
+    # ── Cluster size bounds (points) ─────────────────────────────────────────
+    min_cluster_size: 20
+    max_cluster_size: 100000
+
+    # ── Voxel grid (controls spatial tolerance on the GPU) ───────────────────
+    voxel_leaf_size_x: 0.5   # metres
+    voxel_leaf_size_y: 0.5
+    voxel_leaf_size_z: 0.5
+
+    # Minimum points per voxel to keep (noise suppression)
+    count_threshold: 2
+
+    # Optional CPU pre-downsampling before GPU transfer.
+    # Enable if the raw cloud is very large (>500 k points) and you want to
+    # reduce the host→device copy time. Uses the same voxel sizes as above.
+    use_cpu_pre_downsampling: false

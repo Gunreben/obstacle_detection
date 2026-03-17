@@ -46,7 +46,7 @@ public:
 
     // Subscriber and Publishers
     sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-      input_topic_, 10,
+      input_topic_, rclcpp::SensorDataQoS(),
       std::bind(&ObstacleDetectionNode::pointCloudCallback, this, std::placeholders::_1));
     cluster_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(cluster_topic_, 10);
     marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(marker_topic_, 10);

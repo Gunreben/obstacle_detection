@@ -82,7 +82,7 @@ public:
 
     // ── ROS I/O ──────────────────────────────────────────────────────────────
     sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-      input_topic_, 10,
+      input_topic_, rclcpp::SensorDataQoS(),
       std::bind(&ObstacleDetectionCudaNode::pointCloudCallback, this,
                 std::placeholders::_1));
     cluster_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(

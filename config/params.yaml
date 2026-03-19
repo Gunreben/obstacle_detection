@@ -4,7 +4,7 @@
 obstacle_detection_node:
   ros__parameters:
     # ── Topics ────────────────────────────────────────────────────────────────
-    input_topic:   "/filtered_fov_points"   # input PointCloud2 topic
+    input_topic:   "/ouster/points/filtered"   # input PointCloud2 topic
     cluster_topic: "/detected_obstacles"    # coloured cluster cloud output
     marker_topic:  "/obstacle_markers"      # bounding-box MarkerArray output
 
@@ -16,10 +16,32 @@ obstacle_detection_node:
     cluster_tolerance: 0.5
 
     # Cluster size bounds (points)
-    min_cluster_size: 50
+    min_cluster_size: 20
     max_cluster_size: 10000
+
+    # Adaptive near/mid/far clustering reduces the point-count bias against
+    # distant objects while keeping the near field more selective.
+    use_adaptive_clustering: true
+    near_range_max: 15.0
+    mid_range_max: 30.0
+    near_cluster_tolerance: 0.45
+    mid_cluster_tolerance: 0.70
+    far_cluster_tolerance: 1.00
+    near_min_cluster_size: 50
+    mid_min_cluster_size: 25
+    far_min_cluster_size: 10
 
     # ── Voxel downsampling (CPU pre-filter) ──────────────────────────────────
     use_downsampling: true
     # Voxel leaf size (m) – smaller = more precise but slower
     voxel_leaf_size: 0.1
+
+    # Persistent tracking keeps marker IDs and colors stable between frames.
+    enable_tracking: true
+    tracking_max_association_distance: 1.5
+    tracking_range_gate_scale: 0.03
+    tracking_max_missed_frames: 3
+    tracking_smoothing_alpha: 0.6
+
+    # Use timestamped TF lookups to reduce motion-induced jitter.
+    tf_lookup_timeout_sec: 0.05

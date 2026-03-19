@@ -39,3 +39,34 @@ obstacle_detection_cuda_node:
     # Enable if the raw cloud is very large (>500 k points) and you want to
     # reduce the host→device copy time. Uses the same voxel sizes as above.
     use_cpu_pre_downsampling: false
+
+    # Adaptive near/mid/far bins make the CUDA voxel clustering less harsh on
+    # sparse long-range returns.
+    use_adaptive_clustering: true
+    near_range_max: 15.0
+    mid_range_max: 30.0
+    near_voxel_leaf_size_x: 0.35
+    near_voxel_leaf_size_y: 0.35
+    near_voxel_leaf_size_z: 0.35
+    mid_voxel_leaf_size_x: 0.50
+    mid_voxel_leaf_size_y: 0.50
+    mid_voxel_leaf_size_z: 0.50
+    far_voxel_leaf_size_x: 0.80
+    far_voxel_leaf_size_y: 0.80
+    far_voxel_leaf_size_z: 0.80
+    near_count_threshold: 2
+    mid_count_threshold: 1
+    far_count_threshold: 1
+    near_min_cluster_size: 20
+    mid_min_cluster_size: 12
+    far_min_cluster_size: 6
+
+    # Persistent tracking keeps marker IDs and colors tied to the same object.
+    enable_tracking: true
+    tracking_max_association_distance: 1.5
+    tracking_range_gate_scale: 0.03
+    tracking_max_missed_frames: 3
+    tracking_smoothing_alpha: 0.6
+
+    # Use the cloud timestamp for TF lookups instead of the latest transform.
+    tf_lookup_timeout_sec: 0.05

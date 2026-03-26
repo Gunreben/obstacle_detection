@@ -16,7 +16,7 @@ obstacle_detection_node:
     cluster_tolerance: 0.5
 
     # Cluster size bounds (points)
-    min_cluster_size: 20
+    min_cluster_size: 8
     max_cluster_size: 10000
 
     # Adaptive near/mid/far clustering reduces the point-count bias against
@@ -28,8 +28,8 @@ obstacle_detection_node:
     mid_cluster_tolerance: 0.70
     far_cluster_tolerance: 1.00
     near_min_cluster_size: 50
-    mid_min_cluster_size: 25
-    far_min_cluster_size: 10
+    mid_min_cluster_size: 13
+    far_min_cluster_size: 8
 
     # ── Voxel downsampling (CPU pre-filter) ──────────────────────────────────
     use_downsampling: true
@@ -40,7 +40,7 @@ obstacle_detection_node:
     enable_tracking: true
     tracking_max_association_distance: 1.5
     tracking_range_gate_scale: 0.03
-    tracking_max_missed_frames: 3
+    tracking_max_missed_frames: 5
     tracking_smoothing_alpha: 0.6
 
     # Use timestamped TF lookups to reduce motion-induced jitter.

@@ -116,6 +116,10 @@ endif()
 # ============================================================================
 # Install
 # ============================================================================
+set_target_properties(obstacle_detection_cuda PROPERTIES
+  INSTALL_RPATH "$ORIGIN"
+  BUILD_WITH_INSTALL_RPATH TRUE)
+
 set(INSTALL_TARGETS obstacle_detection_node obstacle_detection_cuda)
 if(HAVE_PCL_GPU)
   list(APPEND INSTALL_TARGETS obstacle_detection_gpu)

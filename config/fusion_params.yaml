@@ -1,20 +1,13 @@
 detection_fusion_node:
   ros__parameters:
-    yolo_topic: "/zed/zed_node/right_raw/image_raw_color/compressed_bboxes"
+    yolo_topic: "/zed/zed_node/left_raw/image_raw_color/compressed_bboxes"
     marker_topic: "/obstacle_markers"
     pointcloud_topic: "/ouster/points"
     output_topic: "/safety_zone/detections"
     alert_topic: "/safety_zone/alerts"
     target_frame: "base_link"
-    camera_frame: "zed_right_camera_optical_frame"
-
-    # ZED right camera intrinsics (1280x720)
-    camera_fx: 534.11
-    camera_fy: 534.18
-    camera_cx: 551.76
-    camera_cy: 316.768
-    camera_width: 1280
-    camera_height: 720
+    camera_frame: "zed_left_camera_optical_frame"
+    camera_info_topic: "/zed/left/camera_info"
 
     # Extra pixel padding around YOLO bbox for LiDAR point lookup.
     # Increase if calibration is imperfect.
@@ -27,12 +20,12 @@ detection_fusion_node:
     min_lidar_points_in_bbox: 3
 
     # Safety zones in base_link frame (x = lateral, y = forward)
-    red_zone_x_min: -2.0
-    red_zone_x_max: 2.0
-    red_zone_y_min: -4.0
-    red_zone_y_max: 6.0
+    red_zone_x_min: -4.0
+    red_zone_x_max: 4.0
+    red_zone_y_min: -6.0
+    red_zone_y_max: 12.0
 
-    yellow_zone_x_min: -4.0
-    yellow_zone_x_max: 4.0
-    yellow_zone_y_min: -6.0
-    yellow_zone_y_max: 10.0
+    yellow_zone_x_min: -8.0
+    yellow_zone_x_max: 8.0
+    yellow_zone_y_min: -7.0
+    yellow_zone_y_max: 20.0

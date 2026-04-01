@@ -10,7 +10,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from geometry_msgs.msg import Point, Vector3
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import CameraInfo, PointCloud2
 from vision_msgs.msg import Detection2DArray
 from visualization_msgs.msg import MarkerArray
 
@@ -36,13 +36,7 @@ class DetectionFusionNode(Node):
         self.declare_parameter("alert_topic", "/safety_zone/alerts")
         self.declare_parameter("target_frame", "base_link")
         self.declare_parameter("camera_frame", "zed_left_camera_optical_frame")
-
-        self.declare_parameter("camera_fx", 267.44)
-        self.declare_parameter("camera_fy", 267.53)
-        self.declare_parameter("camera_cx", 317.865)
-        self.declare_parameter("camera_cy", 174.083)
-        self.declare_parameter("camera_width", 640)
-        self.declare_parameter("camera_height", 360)
+        self.declare_parameter("camera_info_topic", "/zed/left/camera_info")
 
         self.declare_parameter("bbox_margin_pixels", 15)
         self.declare_parameter("max_association_distance", 2.0)
@@ -76,6 +70,9 @@ class DetectionFusionNode(Node):
         self.create_subscription(
             Detection2DArray, self.yolo_topic, self._yolo_cb, 10
         )
+        self.create_subscription(
+            CameraInfo, self.camera_info_topic, self._camera_info_cb, qos_sensor
+        )
 
         self.det_pub = self.create_publisher(
             TrackedObjectArray, self.output_topic, 10
@@ -94,13 +91,14 @@ class DetectionFusionNode(Node):
         self.alert_topic = self.get_parameter("alert_topic").value
         self.target_frame = self.get_parameter("target_frame").value
         self.camera_frame = self.get_parameter("camera_frame").value
+        self.camera_info_topic = self.get_parameter("camera_info_topic").value
 
-        self.fx = self.get_parameter("camera_fx").value
-        self.fy = self.get_parameter("camera_fy").value
-        self.cx = self.get_parameter("camera_cx").value
-        self.cy = self.get_parameter("camera_cy").value
-        self.img_w = self.get_parameter("camera_width").value
-        self.img_h = self.get_parameter("camera_height").value
+        self.fx: float | None = None
+        self.fy: float | None = None
+        self.cx: float | None = None
+        self.cy: float | None = None
+        self.img_w: int | None = None
+        self.img_h: int | None = None
 
         self.bbox_margin = self.get_parameter("bbox_margin_pixels").value
         self.max_assoc_dist = self.get_parameter("max_association_distance").value
@@ -119,6 +117,14 @@ class DetectionFusionNode(Node):
             "y_max": self.get_parameter("yellow_zone_y_max").value,
         }
 
+    def _camera_info_cb(self, msg: CameraInfo):
+        self.fx = msg.k[0]
+        self.fy = msg.k[4]
+        self.cx = msg.k[2]
+        self.cy = msg.k[5]
+        self.img_w = msg.width
+        self.img_h = msg.height
+
     def _cloud_cb(self, msg: PointCloud2):
         self._latest_cloud = msg
 
@@ -126,6 +132,13 @@ class DetectionFusionNode(Node):
         self._latest_markers = msg
 
     def _yolo_cb(self, msg: Detection2DArray):
+        if self.fx is None:
+            self.get_logger().warn(
+                f"No CameraInfo received on {self.camera_info_topic} yet, skipping",
+                throttle_duration_sec=5.0,
+            )
+            return
+
         cloud = self._latest_cloud
         if cloud is None:
             return

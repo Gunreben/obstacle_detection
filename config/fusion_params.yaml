@@ -1,13 +1,46 @@
 detection_fusion_node:
   ros__parameters:
-    yolo_topic: "/zed/zed_node/left_raw/image_raw_color/compressed_bboxes"
     marker_topic: "/obstacle_markers"
     pointcloud_topic: "/ouster/points"
     output_topic: "/safety_zone/detections"
     alert_topic: "/safety_zone/alerts"
     target_frame: "base_link"
-    camera_frame: "zed_left_camera_optical_frame"
-    camera_info_topic: "/zed/left/camera_info"
+
+    # --- Camera configuration -------------------------------------------------
+    # Each entry needs a matching block under "cameras.<name>".
+    camera_names:
+      - "zed_front"
+      - "side_left"
+      - "rear_left"
+      - "rear_mid"
+      - "rear_right"
+      - "side_right"
+
+    cameras:
+      zed_front:
+        yolo_topic: "/zed/zed_node/left_raw/image_raw_color/compressed_bboxes"
+        camera_frame: "zed_left_camera_optical_frame"
+        camera_info_topic: "/zed/left/camera_info"
+      side_left:
+        yolo_topic: "/camera/side_left/image_raw/compressed_bboxes"
+        camera_frame: "camera_side_left"
+        camera_info_topic: "/camera/side_left/image_raw/camera_info"
+      rear_left:
+        yolo_topic: "/camera/rear_left/image_raw/compressed_bboxes"
+        camera_frame: "camera_rear_left"
+        camera_info_topic: "/camera/rear_left/image_raw/camera_info"
+      rear_mid:
+        yolo_topic: "/camera/rear_mid/image_raw/compressed_bboxes"
+        camera_frame: "camera_rear_mid"
+        camera_info_topic: "/camera/rear_mid/image_raw/camera_info"
+      rear_right:
+        yolo_topic: "/camera/rear_right/image_raw/compressed_bboxes"
+        camera_frame: "camera_rear_right"
+        camera_info_topic: "/camera/rear_right/image_raw/camera_info"
+      side_right:
+        yolo_topic: "/camera/side_right/image_raw/compressed_bboxes"
+        camera_frame: "camera_side_right"
+        camera_info_topic: "/camera/side_right/image_raw/camera_info"
 
     # Extra pixel padding around YOLO bbox for LiDAR point lookup.
     # Increase if calibration is imperfect.
@@ -18,6 +51,11 @@ detection_fusion_node:
 
     # Minimum LiDAR points inside a bbox to consider it a valid 3D detection.
     min_lidar_points_in_bbox: 3
+
+    # When no LiDAR points project into a bbox, place camera-only detections by
+    # intersecting the bbox bottom-center ray with the ground plane.
+    enable_ground_projection_fallback: true
+    ground_z: 0.0
 
     # Safety zones in base_link frame (x = lateral, y = forward)
     red_zone_x_min: -4.0

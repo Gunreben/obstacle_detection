@@ -87,6 +87,35 @@ y = forward, matching the mesh-derived TF tree. Verifying/fixing this
 against REP-103 is parked as a separate HIL step — do not change it as
 a side effect of other work.
 
+## Running the demonstrator on the tractor (D4-validated)
+
+```bash
+# 1. Sensors + TF (recording configuration)
+ros2 launch tractor_bringup tractor_bringup.launch.py
+# 2. (optional) dataset recording
+bash /mnt/ros2_ws/system/scripts/record.sh
+# 3. Detection stack — bringup owns TF, hence tf:=false
+ros2 launch obstacle_detection safety_zone_visualizer_stack.launch.py tf:=false
+# 4. Visualization for the Foxglove panel
+ros2 run foxglove_bridge foxglove_bridge   # connect Foxglove to ws://<jetson>:8765
+```
+
+Measured on the AGX Orin (2026-07-07, all sensors + recording +
+detection concurrently, 120 s):
+
+| Metric | Value |
+|---|---|
+| Sensor rates | Ouster 10.0 Hz, ArkCams 24.6 Hz, ZED 14.7 Hz (all nominal) |
+| Detection rates | /lidar/objects 10.0 Hz, fusion + alerts 10.0 Hz, YOLO ~8 Hz/cam |
+| Alert latency (lidar stamp → alert) | **280 ms** (152 ms of that is inside the Ouster driver) |
+| CPU (detection + recording) | filter 0.64 + cluster 0.73 + yolo 1.13 + fusion 0.15 + recorder 0.47 ≈ 3.1 cores; system loadavg 8.1/12 |
+| GPU | ~52% (yolo TensorRT + ZED NEURAL depth) |
+| Recording | ~70 MB/s to disk, zero recorder drops, bag counts nominal |
+
+Detection topics (`/lidar/objects`, `/safety_zone/*`, `/yolo/*`) are
+**not** in the dataset recording list; add them to
+`tractor_bringup/config/record_topics.txt` if a run should capture them.
+
 ## Messages
 
 `TrackedObject(Array)`, `SafetyAlert(Array)`, `Zone(Array)` — see

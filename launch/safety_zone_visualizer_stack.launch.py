@@ -2,6 +2,7 @@
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -13,6 +14,14 @@ def generate_launch_description():
         "input_topic",
         default_value="/ouster/points/filtered",
         description="PointCloud2 input topic for obstacle_detection_cuda.",
+    )
+
+    # On the tractor, tractor_bringup already publishes the URDF TF —
+    # run with tf:=false there. Default true for standalone/desktop use.
+    tf_arg = DeclareLaunchArgument(
+        "tf",
+        default_value="true",
+        description="Include robot_tf_calibrated (disable when tractor_bringup provides TF).",
     )
 
     enable_box_filter_arg = DeclareLaunchArgument(
@@ -42,6 +51,7 @@ def generate_launch_description():
             )
         ),
         launch_arguments={"calibration_source": "msa_new"}.items(),
+        condition=IfCondition(LaunchConfiguration("tf")),
     )
 
     # params_cuda.yaml first, so the input_topic launch arg overrides it.
@@ -103,6 +113,7 @@ def generate_launch_description():
     return LaunchDescription(
         [
             input_topic_arg,
+            tf_arg,
             enable_box_filter_arg,
             enable_aperture_filter_arg,
             enable_ground_filter_arg,

@@ -24,6 +24,12 @@ def generate_launch_description():
         description="Include robot_tf_calibrated (disable when tractor_bringup provides TF).",
     )
 
+    foxglove_arg = DeclareLaunchArgument(
+        "foxglove",
+        default_value="false",
+        description="Start foxglove_bridge (ws://<host>:8765) for the SafetyZone panel.",
+    )
+
     enable_box_filter_arg = DeclareLaunchArgument(
         "enable_box_filter",
         default_value="true",
@@ -110,10 +116,19 @@ def generate_launch_description():
         )
     )
 
+    foxglove_bridge_node = Node(
+        package="foxglove_bridge",
+        executable="foxglove_bridge",
+        name="foxglove_bridge",
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("foxglove")),
+    )
+
     return LaunchDescription(
         [
             input_topic_arg,
             tf_arg,
+            foxglove_arg,
             enable_box_filter_arg,
             enable_aperture_filter_arg,
             enable_ground_filter_arg,
@@ -122,5 +137,6 @@ def generate_launch_description():
             combined_lidar_filter_node,
             yolo_multi_cam_launch,
             detection_fusion_launch,
+            foxglove_bridge_node,
         ]
     )

@@ -16,9 +16,15 @@
 obstacle_detection_cuda_node:
   ros__parameters:
     # ── Topics ────────────────────────────────────────────────────────────────
-    input_topic:   "/filtered_fov_points"
-    cluster_topic: "/detected_obstacles"
-    marker_topic:  "/obstacle_markers"
+    input_topic:      "/ouster/points/filtered"
+    detections_topic: "/lidar/objects"    # TrackedObjectArray (fusion input)
+    cluster_topic:    "/detected_obstacles"
+    marker_topic:     "/obstacle_markers"
+
+    # Debug outputs (RViz/Foxglove). The colored cluster cloud is a full
+    # PointCloud2 republish per frame — disable on the Jetson.
+    publish_markers: true
+    publish_cluster_cloud: true
 
     # ── Frame ─────────────────────────────────────────────────────────────────
     target_frame: "base_link"

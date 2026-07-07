@@ -44,13 +44,19 @@ def generate_launch_description():
         launch_arguments={"calibration_source": "msa_new"}.items(),
     )
 
+    # params_cuda.yaml first, so the input_topic launch arg overrides it.
     obstacle_detection_cuda_node = Node(
         package="obstacle_detection",
         executable="obstacle_detection_cuda",
         name="obstacle_detection_cuda_node",
         output="screen",
         emulate_tty=True,
-        parameters=[{"input_topic": LaunchConfiguration("input_topic")}],
+        parameters=[
+            PathJoinSubstitution(
+                [FindPackageShare("obstacle_detection"), "config", "params_cuda.yaml"]
+            ),
+            {"input_topic": LaunchConfiguration("input_topic")},
+        ],
     )
 
     combined_lidar_filter_node = Node(

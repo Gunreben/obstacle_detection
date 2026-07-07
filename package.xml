@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>obstacle_detection</name>
-  <version>0.0.0</version>
+  <version>0.2.0</version>
   <description>A package for detecting obstacles using PointCloud data with both CPU and GPU nodes.</description>
   <maintainer email="gunreben@wifa.uni-leipzig.de">user</maintainer>
   <license>Apache 2.0</license> 
@@ -31,7 +31,6 @@
   <!-- Python fusion node dependencies -->
   <exec_depend>rclpy</exec_depend>
   <exec_depend>vision_msgs</exec_depend>
-  <exec_depend>sensor_msgs_py</exec_depend>
 
   <!-- Testing dependencies -->
   <test_depend>ament_lint_auto</test_depend>

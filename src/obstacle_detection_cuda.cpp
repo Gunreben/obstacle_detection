@@ -25,6 +25,8 @@
 #include "cuda_runtime.h"
 #include "obstacle_detection/cluster_tracker.hpp"
 #include "obstacle_detection/cudaCluster.h"
+#include "obstacle_detection/msg/tracked_object.hpp"
+#include "obstacle_detection/msg/tracked_object_array.hpp"
 
 class ObstacleDetectionCudaNode : public rclcpp::Node
 {
@@ -52,6 +54,8 @@ public:
       std::bind(&ObstacleDetectionCudaNode::pointCloudCallback, this, std::placeholders::_1));
     cluster_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(cluster_topic_, 10);
     marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(marker_topic_, 10);
+    objects_pub_ = this->create_publisher<obstacle_detection::msg::TrackedObjectArray>(
+      detections_topic_, 10);
   }
 
   ~ObstacleDetectionCudaNode()
@@ -84,6 +88,9 @@ private:
     this->declare_parameter<std::string>("input_topic", "/filtered_fov_points");
     this->declare_parameter<std::string>("cluster_topic", "/detected_obstacles");
     this->declare_parameter<std::string>("marker_topic", "/obstacle_markers");
+    this->declare_parameter<std::string>("detections_topic", "/lidar/objects");
+    this->declare_parameter<bool>("publish_markers", true);
+    this->declare_parameter<bool>("publish_cluster_cloud", true);
     this->declare_parameter<std::string>("target_frame", "base_link");
     this->declare_parameter<int>("min_cluster_size", 20);
     this->declare_parameter<int>("max_cluster_size", 100000);
@@ -123,6 +130,9 @@ private:
     input_topic_ = this->get_parameter("input_topic").as_string();
     cluster_topic_ = this->get_parameter("cluster_topic").as_string();
     marker_topic_ = this->get_parameter("marker_topic").as_string();
+    detections_topic_ = this->get_parameter("detections_topic").as_string();
+    publish_markers_ = this->get_parameter("publish_markers").as_bool();
+    publish_cluster_cloud_ = this->get_parameter("publish_cluster_cloud").as_bool();
     target_frame_ = this->get_parameter("target_frame").as_string();
     min_cluster_size_ = this->get_parameter("min_cluster_size").as_int();
     max_cluster_size_ = this->get_parameter("max_cluster_size").as_int();
@@ -193,39 +203,46 @@ private:
       const auto candidates = extractClusterCandidates(cloud);
       const auto tracked_detections = assignTrackIds(candidates);
 
-      visualization_msgs::msg::MarkerArray marker_array;
-      pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_clusters(new pcl::PointCloud<pcl::PointXYZRGB>());
-      std::set<int> active_marker_ids;
+      publishObjects(tracked_detections, cloud_msg->header.stamp);
 
-      for (const auto & tracked_detection : tracked_detections) {
-        const auto & candidate = candidates[tracked_detection.detection_index];
-        const auto [r, g, b] = colorForTrack(tracked_detection.track_id);
-        for (auto & point_rgb : candidate.cloud->points) {
-          point_rgb.r = r;
-          point_rgb.g = g;
-          point_rgb.b = b;
+      if (publish_markers_) {
+        visualization_msgs::msg::MarkerArray marker_array;
+        std::set<int> active_marker_ids;
+        for (const auto & tracked_detection : tracked_detections) {
+          const auto [r, g, b] = colorForTrack(tracked_detection.track_id);
+          active_marker_ids.insert(tracked_detection.track_id);
+          marker_array.markers.push_back(
+            makeMarker(
+              tracked_detection.track_id,
+              tracked_detection.geometry,
+              r,
+              g,
+              b,
+              cloud_msg->header.stamp));
         }
-        *cloud_clusters += *candidate.cloud;
-        active_marker_ids.insert(tracked_detection.track_id);
-        marker_array.markers.push_back(
-          makeMarker(
-            tracked_detection.track_id,
-            tracked_detection.geometry,
-            r,
-            g,
-            b,
-            cloud_msg->header.stamp));
+        appendDeleteMarkers(marker_array, active_marker_ids, cloud_msg->header.stamp);
+        last_published_marker_ids_ = active_marker_ids;
+        marker_pub_->publish(marker_array);
       }
 
-      appendDeleteMarkers(marker_array, active_marker_ids, cloud_msg->header.stamp);
-      last_published_marker_ids_ = active_marker_ids;
-
-      sensor_msgs::msg::PointCloud2 out_cloud;
-      pcl::toROSMsg(*cloud_clusters, out_cloud);
-      out_cloud.header.frame_id = target_frame_;
-      out_cloud.header.stamp = cloud_msg->header.stamp;
-      cluster_pub_->publish(out_cloud);
-      marker_pub_->publish(marker_array);
+      if (publish_cluster_cloud_) {
+        pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_clusters(new pcl::PointCloud<pcl::PointXYZRGB>());
+        for (const auto & tracked_detection : tracked_detections) {
+          const auto & candidate = candidates[tracked_detection.detection_index];
+          const auto [r, g, b] = colorForTrack(tracked_detection.track_id);
+          for (auto & point_rgb : candidate.cloud->points) {
+            point_rgb.r = r;
+            point_rgb.g = g;
+            point_rgb.b = b;
+          }
+          *cloud_clusters += *candidate.cloud;
+        }
+        sensor_msgs::msg::PointCloud2 out_cloud;
+        pcl::toROSMsg(*cloud_clusters, out_cloud);
+        out_cloud.header.frame_id = target_frame_;
+        out_cloud.header.stamp = cloud_msg->header.stamp;
+        cluster_pub_->publish(out_cloud);
+      }
     } catch (const tf2::TransformException & ex) {
       RCLCPP_WARN(this->get_logger(), "Could not transform point cloud: %s", ex.what());
     } catch (const std::exception & ex) {
@@ -401,6 +418,31 @@ private:
     return tracked_detections;
   }
 
+  void publishObjects(
+    const std::vector<obstacle_detection::TrackedDetection> & tracked_detections,
+    const builtin_interfaces::msg::Time & stamp)
+  {
+    obstacle_detection::msg::TrackedObjectArray objects;
+    objects.header.stamp = stamp;
+    objects.header.frame_id = target_frame_;
+    objects.objects.reserve(tracked_detections.size());
+    for (const auto & tracked_detection : tracked_detections) {
+      obstacle_detection::msg::TrackedObject object;
+      object.track_id = tracked_detection.track_id;
+      object.class_name = "unknown";
+      object.confidence = 0.0;
+      object.position.x = tracked_detection.geometry.center[0];
+      object.position.y = tracked_detection.geometry.center[1];
+      object.position.z = tracked_detection.geometry.center[2];
+      object.size.x = tracked_detection.geometry.size[0];
+      object.size.y = tracked_detection.geometry.size[1];
+      object.size.z = tracked_detection.geometry.size[2];
+      object.source = "lidar";
+      objects.objects.push_back(object);
+    }
+    objects_pub_->publish(objects);
+  }
+
   visualization_msgs::msg::Marker makeMarker(
     int marker_id,
     const obstacle_detection::DetectionGeometry & geometry,
@@ -541,6 +583,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cluster_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
+  rclcpp::Publisher<obstacle_detection::msg::TrackedObjectArray>::SharedPtr objects_pub_;
 
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -551,6 +594,9 @@ private:
   std::string input_topic_;
   std::string cluster_topic_;
   std::string marker_topic_;
+  std::string detections_topic_;
+  bool publish_markers_ {true};
+  bool publish_cluster_cloud_ {true};
   std::string target_frame_;
 
   int min_cluster_size_ {20};

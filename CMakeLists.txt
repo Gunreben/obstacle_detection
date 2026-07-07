@@ -6,9 +6,12 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# Target RTX 4090 (Ada Lovelace, sm_89).
-# Also include sm_75/80/86 for Turing / Ampere portability.
-set(CMAKE_CUDA_ARCHITECTURES "75;80;86;89" CACHE STRING "CUDA architectures")
+# sm_87 = Jetson AGX Orin, sm_89 = RTX 4090 (Ada); 75/80/86 for
+# Turing/Ampere portability. Plain set (no CACHE): project() already
+# initialized the cache entry to nvcc's default (sm_52), and a CACHE set
+# cannot override an existing entry — the sm_52-only build crashes at
+# runtime on every real target.
+set(CMAKE_CUDA_ARCHITECTURES "75;80;86;87;89")
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CXX_STANDARD  17)
 
@@ -32,8 +35,11 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TrackedObjectArray.msg"
   "msg/SafetyAlert.msg"
   "msg/SafetyAlertArray.msg"
+  "msg/Zone.msg"
+  "msg/ZoneArray.msg"
   DEPENDENCIES std_msgs geometry_msgs
 )
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
 # ── PCL (CPU modules always required) ───────────────────────────────────────
 find_package(PCL REQUIRED COMPONENTS common io filters segmentation)
@@ -70,7 +76,7 @@ add_executable(obstacle_detection_node src/obstacle_detection_node.cpp)
 ament_target_dependencies(obstacle_detection_node
   rclcpp sensor_msgs pcl_conversions pcl_ros
   visualization_msgs tf2 tf2_ros tf2_sensor_msgs PCL)
-target_link_libraries(obstacle_detection_node ${PCL_LIBRARIES})
+target_link_libraries(obstacle_detection_node ${PCL_LIBRARIES} "${cpp_typesupport_target}")
 
 # ============================================================================
 # 2. CUDA cluster library (source-built for this machine's architecture)
@@ -96,7 +102,8 @@ ament_target_dependencies(obstacle_detection_cuda
 target_link_libraries(obstacle_detection_cuda
   ${PCL_LIBRARIES}
   cudacluster
-  CUDA::cudart)
+  CUDA::cudart
+  "${cpp_typesupport_target}")
 
 # ============================================================================
 # 4. PCL-GPU obstacle detection node (optional)

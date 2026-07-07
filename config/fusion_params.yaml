@@ -1,63 +1,73 @@
 detection_fusion_node:
   ros__parameters:
-    marker_topic: "/obstacle_markers"
-    pointcloud_topic: "/ouster/points"
+    # Lidar cluster objects from obstacle_detection_node / _cuda.
+    lidar_objects_topic: "/lidar/objects"
     output_topic: "/safety_zone/detections"
     alert_topic: "/safety_zone/alerts"
+    # Latched (transient_local) zone geometry for visualizers.
+    zone_config_topic: "/safety_zone/config"
     target_frame: "base_link"
 
-    # --- Camera configuration -------------------------------------------------
-    # Each entry needs a matching block under "cameras.<name>".
+    # --- Camera configuration ---------------------------------------------
+    # YOLO detections are consumed from /yolo/<name>/detections (stable
+    # names, see yolo_multi_cam). The camera optical frame comes from the
+    # detection header, so only camera_info topics are configured here.
+    # camera_info_topic_v1/_v2 = recording-stack v1 bags / live v2 stack;
+    # both are subscribed, latest wins (only one exists in practice).
     camera_names:
       - "zed_front"
       - "side_left"
       - "rear_left"
-      - "rear_mid"
+      - "rear_mid"      # dead as of 2026-07, tolerated (topic silent)
       - "rear_right"
       - "side_right"
 
     cameras:
       zed_front:
-        yolo_topic: "/zed/zed_node/left_raw/image_raw_color/compressed_bboxes"
-        camera_frame: "zed_left_camera_optical_frame"
-        camera_info_topic: "/zed/left/camera_info"
+        # v1: standalone zed_camera_info_publisher (hardcoded 640x360)
+        camera_info_topic_v1: "/zed/left/camera_info"
+        # v2: ZED wrapper 5.x (matches the 1080p raw image)
+        camera_info_topic_v2: "/zed/zed_node/left/color/raw/camera_info"
       side_left:
-        yolo_topic: "/camera/side_left/image_raw/compressed_bboxes"
-        camera_frame: "camera_side_left"
         camera_info_topic: "/camera/side_left/image_raw/camera_info"
       rear_left:
-        yolo_topic: "/camera/rear_left/image_raw/compressed_bboxes"
-        camera_frame: "camera_rear_left"
         camera_info_topic: "/camera/rear_left/image_raw/camera_info"
       rear_mid:
-        yolo_topic: "/camera/rear_mid/image_raw/compressed_bboxes"
-        camera_frame: "camera_rear_mid"
         camera_info_topic: "/camera/rear_mid/image_raw/camera_info"
       rear_right:
-        yolo_topic: "/camera/rear_right/image_raw/compressed_bboxes"
-        camera_frame: "camera_rear_right"
         camera_info_topic: "/camera/rear_right/image_raw/camera_info"
       side_right:
-        yolo_topic: "/camera/side_right/image_raw/compressed_bboxes"
-        camera_frame: "camera_side_right"
         camera_info_topic: "/camera/side_right/image_raw/camera_info"
 
-    # Extra pixel padding around YOLO bbox for LiDAR point lookup.
-    # Increase if calibration is imperfect.
+    # Extra pixel padding around YOLO bboxes when matching projected
+    # lidar object centers. Increase if calibration is imperfect.
     bbox_margin_pixels: 15
 
-    # Max distance (m) to associate a camera detection with a LiDAR cluster.
+    # 3D fallback association distance (m) between ground-projected
+    # camera detections and unlabeled lidar objects.
     max_association_distance: 2.0
 
-    # Minimum LiDAR points inside a bbox to consider it a valid 3D detection.
-    min_lidar_points_in_bbox: 3
+    # Ignore lidar objects / ground projections beyond this range (m).
+    max_projection_range: 40.0
 
-    # When no LiDAR points project into a bbox, place camera-only detections by
+    # Camera detections older than this (s) are ignored. Must exceed the
+    # camera detection period (10 Hz -> 0.1 s) with margin; guards
+    # against a dead/silent camera keeping ghost detections alive.
+    detection_timeout: 0.7
+
+    # Camera-only detections closer than this (m) to another output
+    # object are merged away (overlapping-camera dedup).
+    camera_only_merge_distance: 1.0
+
+    # When a camera detection matches no lidar object, place it by
     # intersecting the bbox bottom-center ray with the ground plane.
     enable_ground_projection_fallback: true
     ground_z: 0.0
 
-    # Safety zones in base_link frame (x = lateral, y = forward)
+    # Safety zones in the target frame.
+    # Deployment convention: x = lateral, y = forward (mesh-derived TF
+    # tree; verification parked for a separate HIL step -- do not change
+    # together with other edits).
     red_zone_x_min: -4.0
     red_zone_x_max: 4.0
     red_zone_y_min: -6.0

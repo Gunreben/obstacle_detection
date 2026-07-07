@@ -1,67 +1,129 @@
-# Obstacle Detection ROS 2 Package
+# obstacle_detection
 
-This repository contains a ROS 2 package for obstacle detection based on point cloud clustering. It provides two nodes: a CPU-based implementation using standard PCL Euclidean clustering, and a CUDA-accelerated version for faster performance on systems with Jetson Platform with Jetpack 6.0 (General NVIDIA GPU Compatibility not tested, used branch jp_6.x of cuPCL: https://github.com/NVIDIA-AI-IOT/cuPCL)
+Lidar obstacle clustering + camera/lidar late fusion + safety zones for
+the vario700 tractor demonstrator (ROS 2 Humble).
 
-## Features:
+## Pipeline
 
-    CPU Node: Leverages the PCL library's EuclideanClusterExtraction for identifying clusters in 3D point clouds.
-    CUDA Node: Utilizes a CUDA-based clustering approach to accelerate segmentation, potentially offering significant speed-ups on supported hardware.
-    Transforms and Visualization: Automatically transforms incoming point clouds into a target frame and publishes visualization markers (bounding boxes) around detected clusters.
+```
+/ouster/points ─▶ lidar_filter (box/ground) ─▶ /ouster/points/filtered
+                                                      │
+                       obstacle_detection_node / _cuda│(clustering+tracking)
+                                                      ▼
+/yolo/<cam>/detections ──────────────▶ detection_fusion_node ◀── /lidar/objects
+        (yolo_multi_cam)                     │
+                                             ├─▶ /safety_zone/detections  (TrackedObjectArray)
+                                             ├─▶ /safety_zone/alerts      (SafetyAlertArray, every cycle)
+                                             └─▶ /safety_zone/config      (ZoneArray, latched)
+```
+
+Full stack launch (TF + lidar filter + clustering + YOLO + fusion):
+
+```bash
+ros2 launch obstacle_detection safety_zone_visualizer_stack.launch.py
+```
+
+## Nodes
+
+### obstacle_detection_node (CPU) / obstacle_detection_cuda (GPU)
+
+Euclidean clustering of a (pre-filtered) point cloud, with optional
+near/mid/far adaptive parameters and persistent track IDs
+(`cluster_tracker.hpp`, gated nearest-neighbor + EMA smoothing).
+
+The CUDA node uses a source-built voxel connected-components kernel
+(`src/cudaEuclideanCluster.cu`, replaces the prebuilt cuPCL binary in
+`lib/` — that binary predates JetPack 6 and is kept for reference only).
+Built for sm_75/80/86/87/89 (87 = Jetson AGX Orin).
+
+Outputs:
+- `/lidar/objects` (`TrackedObjectArray`) — **the machine-readable
+  interface** consumed by the fusion node (class `unknown`, source
+  `lidar`).
+- `/obstacle_markers` (`MarkerArray`) — debug visualization
+  (`publish_markers`, default true).
+- `/detected_obstacles` (colored cluster `PointCloud2`) — debug only,
+  costs a full cloud republish per frame (`publish_cluster_cloud`,
+  disable on the Jetson).
+
+See `config/params.yaml` / `config/params_cuda.yaml` for tuning
+(cluster sizes, adaptive ranges, tracking gates).
+
+### detection_fusion_node.py
+
+Late fusion of YOLO 2D detections with lidar cluster objects, running
+once per `/lidar/objects` message (~10 Hz):
+
+1. **Pixel association:** lidar object centers are projected into each
+   camera *including lens distortion* (the ArkCams are kannala_brandt
+   fisheye; the ZED plumb_bob/rational) and matched against YOLO bboxes
+   (+`bbox_margin_pixels`); the closest object in range wins (occlusion).
+2. **3D fallback:** unmatched detections are ground-projected
+   (bbox bottom-center ray ∩ z=`ground_z`) and nearest-neighbor matched
+   within `max_association_distance`.
+3. **Camera-only:** remaining detections become `source: "camera"`
+   objects at the ground position, deduplicated across overlapping
+   cameras (`camera_only_merge_distance`).
+
+Camera detections expire after `detection_timeout` (default 0.7 s) and
+`yolo_multi_cam` publishes empty arrays per processed frame, so objects
+vanish promptly when no longer seen (v0.1 kept the last detection of a
+camera alive forever — ghost objects).
+
+The camera optical frame is taken from the `Detection2DArray` header,
+and v1/v2 camera_info topics can both be configured
+(`camera_info_topic_v1/_v2`) — the node works against v1 bags and the
+live v2 stack without reconfiguration. For v1 bags, run
+`ros2 launch tractor_multi_cam_publisher camera_info_only.launch.py`
+alongside (v1 bags contain no camera_info).
+
+`/safety_zone/alerts` is published every cycle (empty when clear) so
+visualizers can clear their alert state. `/safety_zone/config` is
+latched (transient_local) zone geometry for the Foxglove
+SafetyZoneVisualizer panel.
+
+**Zone convention:** zones are currently interpreted as x = lateral,
+y = forward, matching the mesh-derived TF tree. Verifying/fixing this
+against REP-103 is parked as a separate HIL step — do not change it as
+a side effect of other work.
+
+## Messages
+
+`TrackedObject(Array)`, `SafetyAlert(Array)`, `Zone(Array)` — see
+`msg/`.
 
 ## Requirements
 
-    ROS 2 (tested on Humble)
-    PCL (Point Cloud Library)
-    NVIDIA Jetson with CUDA (for the CUDA node)
-    tf2 and tf2_ros for handling transforms
-    rclcpp, sensor_msgs, visualization_msgs for ROS integration
+ROS 2 Humble, PCL (`ros-humble-pcl-ros`), CUDA toolkit (CUDA node),
+`ros-humble-vision-msgs` + Python `opencv` + `numpy` (fusion node),
+`lidar_filter` package (https://github.com/Gunreben/ROS2-Pointcloud-Filter-Tools),
+`yolo_multi_cam` for the camera branch.
 
-## Installation
+```bash
+colcon build --packages-select obstacle_detection
+```
 
-    Clone the repository into your ROS 2 workspace:
+## Changelog
 
-cd ~/ros2_ws/src
-git clone https://github.com/yourusername/obstacle_detection.git
+### 0.2.0 (2026-07)
+- Cluster nodes publish `TrackedObjectArray` on `/lidar/objects`;
+  markers and the colored cluster cloud demoted to optional debug
+  outputs (`publish_markers`, `publish_cluster_cloud`).
+- Fusion rewritten: consumes `/lidar/objects` instead of re-processing
+  the raw point cloud per YOLO callback (was O(131k points × cameras ×
+  frame rate) in Python — the main obstacle to Jetson realtime);
+  distortion-aware projection (fisheye ArkCams — fixes duplicate
+  detections at image edges); stale-detection expiry (fixes ghost
+  objects); cross-camera dedup; alerts published every cycle;
+  latched `/safety_zone/config`.
+- YOLO input topics moved to `yolo_multi_cam` 0.2.0's stable
+  `/yolo/<name>/detections` names; camera frames from detection
+  headers (v1 bag + v2 live compatible).
+- CUDA arch list extended with sm_87 (Jetson AGX Orin);
+  `safety_zone_visualizer_stack.launch.py` now actually loads
+  `params_cuda.yaml`.
+- Merged `desktop-optimization` branch into `main`.
 
-Install dependencies: Make sure all necessary dependencies are installed. For example on Ubuntu:
-
-sudo apt-get update
-sudo apt-get install -y ros-${ROS_DISTRO}-pcl-ros ros-${ROS_DISTRO}-tf2-ros ros-${ROS_DISTRO}-visualization-msgs
-Install CUDA if not already installed. On Jetson devices, CUDA is generally pre-installed.
-
-Build the package:
-
-    cd ~/ros2_ws
-    colcon build --packages-select obstacle_detection
-    source install/setup.bash
-
-## Running the Nodes
-
-### CPU Node:
-
-ros2 run obstacle_detection obstacle_detection_node
-
-### CUDA Node:
-
-ros2 run obstacle_detection obstacle_detection_cuda
-
-Before running, ensure that a point cloud source is available (e.g., from a lidar sensor, RGB-D camera, or a recorded rosbag). Adjust parameters as needed in the node’s YAML configuration file or via command-line parameters.
-Parameters
-
-    input_topic (string): The input point cloud topic. Default: /filtered_fov_points
-    cluster_topic (string): The output point cloud topic for clusters. Default: /detected_obstacles
-    marker_topic (string): The topic for visualization markers. Default: /obstacle_markers
-    target_frame (string): The frame to which the input clouds are transformed. Default: base_link
-    cluster_tolerance (double): Spatial tolerance for clustering (CPU node) / a heuristic used to set thresholds for CUDA node.
-    min_cluster_size (int): The minimum number of points in a cluster.
-    max_cluster_size (int): The maximum number of points in a cluster.
-    voxel_leaf_size (double): The leaf size for optional voxel grid downsampling.
-    use_downsampling (bool): Whether to apply voxel grid downsampling before clustering.
-
-For the CUDA node, parameters like cluster_tolerance affect countThreshold and voxelization parameters internally. Adjust them if no clusters appear.
-Troubleshooting
-
-    If no clusters are detected in the CUDA node, experiment with reducing countThreshold or decreasing the voxel size parameters.
-    If you encounter linking errors, ensure that libcudacluster.so is properly installed and located in a directory known to the linker at runtime.
-    If tf warnings appear, ensure the appropriate transform frames are being broadcasted.
-
+### 0.1.x
+- Desktop demonstrator: CPU/CUDA clustering, tracking, marker-based
+  fusion, zone alerts.

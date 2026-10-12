@@ -42,7 +42,7 @@ from rclpy.qos import (
 )
 
 from geometry_msgs.msg import Point, Vector3
-from sensor_msgs.msg import CameraInfo
+from sensor_msgs.msg import CameraInfo, PointCloud2
 from vision_msgs.msg import Detection2DArray
 
 from obstacle_detection.msg import (
@@ -57,6 +57,166 @@ from obstacle_detection.msg import (
 import tf2_ros
 
 FISHEYE_MODELS = {"kannala_brandt", "equidistant", "fisheye"}
+
+
+class GroundGrid:
+    """Coarse terrain height map (target frame) from a raw lidar cloud.
+
+    Per cell the ``quantile`` of the point heights (robust low value: ground,
+    not the person/obstacle standing in the cell). Cells with fewer than
+    ``min_points`` returns, or inside the vehicle box, are unknown and fall
+    back to the flat ``ground_z``.
+    """
+
+    def __init__(self, cell=2.0, extent=40.0, quantile=0.2, min_points=3):
+        self.cell, self.extent, self.q, self.min_points = cell, extent, quantile, min_points
+        self.n = int(round(2 * extent / cell))
+        self.h = None
+
+    def update(self, pts, exclude_box=None):
+        R = self.extent
+        keep = (np.abs(pts[:, 0]) < R) & (np.abs(pts[:, 1]) < R)
+        if exclude_box is not None:
+            x0, x1, y0, y1 = exclude_box
+            keep &= ~((pts[:, 0] > x0) & (pts[:, 0] < x1) & (pts[:, 1] > y0) & (pts[:, 1] < y1))
+        p = pts[keep]
+        ij = ((p[:, :2] + R) / self.cell).astype(np.int64)
+        idx = ij[:, 1] * self.n + ij[:, 0]
+        order = np.lexsort((p[:, 2], idx))
+        z = p[order, 2]
+        cnt = np.bincount(idx, minlength=self.n * self.n)
+        start = np.concatenate([[0], np.cumsum(cnt)[:-1]])
+        h = np.full(self.n * self.n, np.nan)
+        has = cnt >= self.min_points
+        h[has] = z[start[has] + (self.q * (cnt[has] - 1)).astype(np.int64)]
+        self.h = h.reshape(self.n, self.n)
+
+    def height(self, x, y, default):
+        if self.h is None:
+            return np.full(np.shape(x), default)
+        i = ((np.asarray(x) + self.extent) / self.cell).astype(np.int64)
+        j = ((np.asarray(y) + self.extent) / self.cell).astype(np.int64)
+        ok = (i >= 0) & (i < self.n) & (j >= 0) & (j < self.n)
+        out = np.full(np.shape(x), np.nan)
+        out[ok] = self.h[j[ok], i[ok]]
+        return np.where(np.isfinite(out), out, default)
+
+
+class OutputTracker:
+    """Stable IDs and smoothed positions for the published objects.
+
+    The lidar tracker only covers lidar clusters; camera-only objects had
+    no identity at all, and an object switching between lidar-supported
+    and camera-only jumped (different position estimates) and changed ID.
+    Each output track follows its lidar track_id while available, else the
+    nearest measurement inside a gate. Camera positions (ground ray) are
+    noisier than lidar ones and get a smaller, range-dependent smoothing
+    gain (full ``alpha_camera`` up to 10 m, 10/range beyond). The class
+    label is held for ``label_hold`` s after the last camera confirmation,
+    and person tracks coast for ``coast_time`` s without a measurement.
+    """
+
+    def __init__(self, gate_lidar=1.5, gate_camera=2.5, alpha_lidar=0.6,
+                 alpha_camera=0.3, label_hold=1.5, coast_time=0.3):
+        self.gate_lidar, self.gate_camera = gate_lidar, gate_camera
+        self.alpha_lidar, self.alpha_camera = alpha_lidar, alpha_camera
+        self.label_hold, self.coast_time = label_hold, coast_time
+        self.tracks: dict[int, dict] = {}
+        self.next_id = 0
+
+    def update(self, objs: list, now: float) -> list:
+        by_lidar = {t["lidar_id"]: tid for tid, t in self.tracks.items() if t["lidar_id"] >= 0}
+        assigned: dict[int, int] = {}       # object index -> track id
+        for i, o in enumerate(objs):
+            tid = by_lidar.get(o.track_id) if o.track_id >= 0 else None
+            if tid is not None and tid not in assigned.values():
+                assigned[i] = tid
+        cand = []
+        for i, o in enumerate(objs):
+            if i in assigned:
+                continue
+            camera = o.source == "camera"
+            gate = self.gate_camera if camera else self.gate_lidar
+            for tid, t in self.tracks.items():
+                if camera and t["cls"] != "person":
+                    continue        # camera-only objects are persons
+                if t["lidar_id"] >= 0 and o.track_id >= 0 and t["lidar_id"] != o.track_id \
+                        and now - t["lidar_seen"] < self.coast_time:
+                    continue        # still following another lidar track
+                d = math.hypot(o.position.x - t["pos"][0], o.position.y - t["pos"][1])
+                if d < gate:
+                    cand.append((d, i, tid))
+        used = set(assigned.values())
+        for d, i, tid in sorted(cand):
+            if i in assigned or tid in used:
+                continue
+            assigned[i] = tid
+            used.add(tid)
+
+        out = []
+        for i, o in enumerate(objs):
+            camera = o.source == "camera"
+            pos = np.array([o.position.x, o.position.y, o.position.z])
+            tid = assigned.get(i)
+            if tid is None:
+                tid = self.next_id
+                self.next_id += 1
+                t = self.tracks[tid] = {"pos": pos, "cls": o.class_name or "unknown",
+                                        "conf": o.confidence, "cls_time": -1e9,
+                                        "lidar_id": -1, "lidar_seen": -1e9, "last": now}
+            else:
+                t = self.tracks[tid]
+                if camera:
+                    # ground-ray range noise grows ~quadratically with range
+                    rng = math.hypot(pos[0], pos[1])
+                    a = self.alpha_camera * min(1.0, 10.0 / max(rng, 1e-3))
+                else:   # handover camera -> lidar: blend instead of jumping
+                    a = 0.35 if t.get("source") == "camera" else self.alpha_lidar
+                t["pos"] = (1 - a) * t["pos"] + a * pos
+            t["last"] = now
+            t["source"] = o.source
+            t["size"] = o.size
+            t["vel"] = o.velocity
+            if not camera and o.track_id >= 0:
+                t["lidar_id"], t["lidar_seen"] = o.track_id, now
+            if o.source in ("fused", "camera") and o.class_name:
+                t["cls"], t["conf"], t["cls_time"] = o.class_name, o.confidence, now
+            elif now - t["cls_time"] > self.label_hold:
+                t["cls"], t["conf"] = o.class_name or "unknown", o.confidence
+            out.append(self._msg(tid, t, o.source))
+
+        # coast persons briefly; drop everything stale
+        seen = set(assigned.values()) | {tid for tid, t in self.tracks.items() if t["last"] == now}
+        for tid, t in list(self.tracks.items()):
+            if tid in seen:
+                continue
+            if now - t["last"] > self.coast_time:
+                del self.tracks[tid]
+            elif t["cls"] == "person":
+                out.append(self._msg(tid, t, t["source"]))
+        return out
+
+    @staticmethod
+    def _msg(tid, t, source):
+        o = TrackedObject()
+        o.track_id = tid
+        o.class_name = t["cls"]
+        o.confidence = float(t["conf"])
+        o.position = Point(x=float(t["pos"][0]), y=float(t["pos"][1]), z=float(t["pos"][2]))
+        o.size = t["size"]
+        o.velocity = t["vel"]
+        # a lidar track still carrying a held person label stays "fused"
+        o.source = "fused" if source == "lidar" and t["cls"] != "unknown" else source
+        return o
+
+
+def cloud_xyz(msg: PointCloud2) -> np.ndarray:
+    off = {f.name: f.offset for f in msg.fields}
+    dt = np.dtype({"names": ["x", "y", "z"], "formats": ["<f4"] * 3,
+                   "offsets": [off["x"], off["y"], off["z"]], "itemsize": msg.point_step})
+    arr = np.frombuffer(msg.data, dtype=dt, count=msg.width * msg.height)
+    pts = np.stack([arr["x"], arr["y"], arr["z"]], axis=1).astype(np.float64)
+    return pts[np.isfinite(pts).all(axis=1) & (np.abs(pts).sum(axis=1) > 1e-3)]
 
 
 @dataclass
@@ -109,6 +269,22 @@ class DetectionFusionNode(Node):
         # camera-only objects inside are self-detections (hitch, fenders).
         # Empty = disabled.
         self.declare_parameter("vehicle_footprint", [0.0, 0.0, 0.0, 0.0])
+        # Terrain-aware ground projection: raw (not ground-removed) lidar
+        # cloud for a coarse height map; "" = flat plane at ground_z. A flat
+        # plane puts camera-only objects ~2 m too close on a field that
+        # drops 0.35 m over 15 m (take_2, ZED).
+        self.declare_parameter("ground_cloud_topic", "")
+        self.declare_parameter("ground_update_period", 0.2)
+        self.declare_parameter("ground_cell", 2.0)
+        self.declare_parameter("ground_quantile", 0.2)
+        # Output tracking (stable IDs / smoothing across lidar and camera).
+        self.declare_parameter("enable_output_tracking", True)
+        self.declare_parameter("track_gate_lidar", 1.5)
+        self.declare_parameter("track_gate_camera", 2.5)
+        self.declare_parameter("track_alpha_lidar", 0.6)
+        self.declare_parameter("track_alpha_camera", 0.3)
+        self.declare_parameter("label_hold", 1.5)
+        self.declare_parameter("coast_time", 0.3)
 
         # Zone convention note: x = lateral, y = forward (see module docstring).
         self.declare_parameter("red_zone_x_min", -2.0)
@@ -158,6 +334,21 @@ class DetectionFusionNode(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             depth=1,
         )
+        self.ground = None
+        self._ground_last = 0.0
+        ground_topic = self.get_parameter("ground_cloud_topic").value
+        if ground_topic:
+            self.ground = GroundGrid(cell=self.get_parameter("ground_cell").value,
+                                     quantile=self.get_parameter("ground_quantile").value)
+            self.create_subscription(PointCloud2, ground_topic, self._ground_cb, qos_sensor)
+            self.get_logger().info(f"terrain-aware ground projection from {ground_topic}")
+        self.tracker = None
+        if self.get_parameter("enable_output_tracking").value:
+            g = lambda n: self.get_parameter(n).value  # noqa: E731
+            self.tracker = OutputTracker(g("track_gate_lidar"), g("track_gate_camera"),
+                                         g("track_alpha_lidar"), g("track_alpha_camera"),
+                                         g("label_hold"), g("coast_time"))
+
         self.zone_pub = self.create_publisher(ZoneArray, self.zone_config_topic, zone_qos)
         self._publish_zone_config()
 
@@ -230,6 +421,20 @@ class DetectionFusionNode(Node):
         cam.img_w = msg.width
         cam.img_h = msg.height
 
+    def _ground_cb(self, msg: PointCloud2):
+        now = time.monotonic()
+        if now - self._ground_last < self.get_parameter("ground_update_period").value:
+            return
+        self._ground_last = now
+        tf = self._lookup_transform(self.target_frame, msg.header.frame_id)
+        if tf is None:
+            return
+        rot, trans = self._tf_to_rot_trans(tf)
+        pts = cloud_xyz(msg) @ rot.T + trans
+        fp = self.vehicle_footprint
+        box = None if fp is None else (fp[0] - 0.3, fp[1] + 0.3, fp[2] - 0.3, fp[3] + 0.3)
+        self.ground.update(pts, box)
+
     def _yolo_cb(self, msg: Detection2DArray, *, camera_name: str):
         cam = self._cameras[camera_name]
         if msg.header.frame_id:
@@ -259,6 +464,8 @@ class DetectionFusionNode(Node):
             )
 
         fused = self._fuse(list(msg.objects), msg.header.frame_id)
+        if self.tracker is not None:
+            fused = self.tracker.update(fused, time.monotonic())
 
         out = TrackedObjectArray()
         out.header.stamp = msg.header.stamp
@@ -445,7 +652,8 @@ class DetectionFusionNode(Node):
     def _ground_position(self, det: CameraDetection, cam: CameraState,
                          rot_cam_to_lidar: np.ndarray,
                          cam_origin_lidar: np.ndarray) -> np.ndarray | None:
-        """Intersect the bbox bottom-center ray with z = ground_z (lidar frame)."""
+        """Intersect the bbox bottom-center ray with the ground (lidar frame):
+        the terrain height map if available, else the plane z = ground_z."""
         px = np.array([[[det.cx, det.cy + det.h / 2.0]]], dtype=np.float64)
         try:
             if cam.dist_model in FISHEYE_MODELS:
@@ -462,8 +670,16 @@ class DetectionFusionNode(Node):
         ray = rot_cam_to_lidar @ ray_cam
         origin = cam_origin_lidar
 
-        if abs(ray[2]) < 1e-6:
-            return None
+        if ray[2] > -1e-6:
+            return None     # at or above the horizon
+        if self.ground is not None and self.ground.h is not None:
+            # march along the ray until it is below the terrain height map
+            t = np.arange(0.5, self.max_projection_range, 0.1)
+            pts = origin + t[:, None] * ray
+            below = pts[:, 2] <= self.ground.height(pts[:, 0], pts[:, 1], self.ground_z)
+            if not below.any():
+                return None
+            return pts[int(np.argmax(below))]
         distance = (self.ground_z - origin[2]) / ray[2]
         if distance <= 0.0 or distance > self.max_projection_range:
             return None

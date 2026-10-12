@@ -59,11 +59,14 @@ once per `/lidar/objects` message (~10 Hz):
    fisheye; the ZED plumb_bob/rational) and matched against YOLO bboxes
    (+`bbox_margin_pixels`); the closest object in range wins (occlusion).
 2. **3D fallback:** unmatched detections are ground-projected
-   (bbox bottom-center ray ∩ z=`ground_z`) and nearest-neighbor matched
+   (bbox bottom-center ray ∩ terrain height map from `ground_cloud_topic`,
+   or the plane z=`ground_z`) and nearest-neighbor matched
    within `max_association_distance`.
 3. **Camera-only:** remaining detections become `source: "camera"`
    objects at the ground position, deduplicated across overlapping
    cameras (`camera_only_merge_distance`).
+4. **Output tracking:** one tracker over all outputs gives stable IDs and
+   smoothed positions (see `track_*`, `label_hold`, `coast_time`).
 
 Camera detections expire after `detection_timeout` (default 0.7 s) and
 `yolo_multi_cam` publishes empty arrays per processed frame, so objects
@@ -162,6 +165,16 @@ colcon build --packages-select obstacle_detection
   1.0 -> 2.0 m (cross-camera duplicates).
 - New `safety_zone_scene_node.py`: zones + objects as a Foxglove 3D
   SceneUpdate (`/safety_zone/scene`).
+- Terrain-aware ground projection (`ground_cloud_topic`): camera rays are
+  intersected with a 2 m lidar height map (20 % height quantile per cell)
+  instead of the flat plane. On take_2 (field drops ~0.35 m over 15 m) the
+  ZED camera-only positions were ~1.9 m too close; now median -0.3 m,
+  |err| p50 0.47 m / p90 0.88 m vs lidar.
+- Output tracking (`enable_output_tracking`): stable IDs for all published
+  objects incl. camera-only ones, ID kept across camera-only <-> lidar
+  handovers (blended instead of jumping), range-dependent smoothing of
+  camera positions, person label held 1.5 s, 0.3 s coasting. take_2:
+  person position jumps > 0.5 m per frame 25 -> 2.
 
 ### 0.2.0 (2026-07)
 - Cluster nodes publish `TrackedObjectArray` on `/lidar/objects`;

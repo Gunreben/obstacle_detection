@@ -72,6 +72,23 @@ detection_fusion_node:
     # self-filter box): camera-only objects inside are self-detections.
     vehicle_footprint: [-1.6, 1.6, -2.4, 2.8]
 
+    # Terrain-aware ground projection: raw lidar cloud -> 2 m height map
+    # (20% height quantile per cell). "" = flat plane at ground_z.
+    ground_cloud_topic: ""
+    ground_update_period: 0.2
+    ground_cell: 2.0
+    ground_quantile: 0.2
+
+    # Output tracking: stable IDs and smoothed positions for lidar-supported
+    # and camera-only objects, label hold, short coasting for persons.
+    enable_output_tracking: true
+    track_gate_lidar: 1.5
+    track_gate_camera: 2.5
+    track_alpha_lidar: 0.6
+    track_alpha_camera: 0.3
+    label_hold: 1.5
+    coast_time: 0.3
+
     # Safety zones in the target frame.
     # Deployment convention: x = lateral, y = forward (mesh-derived TF
     # tree; verification parked for a separate HIL step -- do not change

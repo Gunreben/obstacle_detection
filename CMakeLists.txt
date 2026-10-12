@@ -176,7 +176,7 @@ install(DIRECTORY msg
   DESTINATION share/${PROJECT_NAME}
   OPTIONAL)
 
-install(PROGRAMS scripts/detection_fusion_node.py
+install(PROGRAMS scripts/detection_fusion_node.py scripts/safety_zone_scene_node.py
   DESTINATION lib/${PROJECT_NAME}
   OPTIONAL)
 

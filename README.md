@@ -87,6 +87,18 @@ y = forward, matching the mesh-derived TF tree. Verifying/fixing this
 against REP-103 is parked as a separate HIL step — do not change it as
 a side effect of other work.
 
+### safety_zone_scene_node.py
+
+Foxglove 3D rendering of the fusion output (`foxglove_msgs/SceneUpdate`
+on `/safety_zone/scene`, needs `foxglove_msgs`): zones as translucent
+ground rectangles with STOP / WARNING labels that light up while
+occupied, objects as boxes + billboard labels (`<class> #<track> <dist> m`,
+red / amber inside the red / yellow zone, camera-only objects fainter and
+tagged `(cam)`), and a "STOP - n objects in red zone" text above the
+vehicle. Zones are part of every update, so recorded scenes stay correct
+when seeking. Set `ground_z` to the BEV ground height so zones lie on the
+semantic ground grid. Complements the 2D SafetyZoneVisualizer panel.
+
 ## Running the demonstrator on the tractor (D4-validated)
 
 ```bash
@@ -148,6 +160,8 @@ colcon build --packages-select obstacle_detection
   dropped (`vehicle_footprint`) — both removed ghost "persons" on the
   hitch seen by rear_mid (false red alerts). `camera_only_merge_distance`
   1.0 -> 2.0 m (cross-camera duplicates).
+- New `safety_zone_scene_node.py`: zones + objects as a Foxglove 3D
+  SceneUpdate (`/safety_zone/scene`).
 
 ### 0.2.0 (2026-07)
 - Cluster nodes publish `TrackedObjectArray` on `/lidar/objects`;

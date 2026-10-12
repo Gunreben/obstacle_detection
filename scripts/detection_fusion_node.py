@@ -102,6 +102,13 @@ class DetectionFusionNode(Node):
         self.declare_parameter("camera_only_merge_distance", 1.0)
         self.declare_parameter("enable_ground_projection_fallback", True)
         self.declare_parameter("ground_z", 0.0)
+        # bboxes reaching within this many pixels of the image bottom are
+        # truncated (feet not visible): no ground projection for them.
+        self.declare_parameter("truncated_bottom_px", 4)
+        # [x_min, x_max, y_min, y_max] of the vehicle in target_frame;
+        # camera-only objects inside are self-detections (hitch, fenders).
+        # Empty = disabled.
+        self.declare_parameter("vehicle_footprint", [0.0, 0.0, 0.0, 0.0])
 
         # Zone convention note: x = lateral, y = forward (see module docstring).
         self.declare_parameter("red_zone_x_min", -2.0)
@@ -191,6 +198,10 @@ class DetectionFusionNode(Node):
         self.enable_ground_projection_fallback = self.get_parameter(
             "enable_ground_projection_fallback").value
         self.ground_z = self.get_parameter("ground_z").value
+        self.truncated_bottom_px = self.get_parameter("truncated_bottom_px").value
+        fp = list(self.get_parameter("vehicle_footprint").value)
+        self.vehicle_footprint = fp if len(fp) == 4 and fp[1] > fp[0] and fp[3] > fp[2] \
+            else None
 
         self.zones = {
             "red": {
@@ -322,7 +333,9 @@ class DetectionFusionNode(Node):
                         labels[best_idx] = (det.class_name, det.confidence)
                 else:
                     ground = None
-                    if self.enable_ground_projection_fallback:
+                    truncated = cam.img_h and (det.cy + det.h / 2.0
+                                               >= cam.img_h - self.truncated_bottom_px)
+                    if self.enable_ground_projection_fallback and not truncated:
                         # Ray needs camera->lidar: invert the transform.
                         ground = self._ground_position(
                             det, cam, rot.T, -rot.T @ trans)
@@ -372,6 +385,9 @@ class DetectionFusionNode(Node):
         ]
         for det, ground in sorted(camera_only, key=lambda t: -t[0].confidence):
             pos2 = np.array([ground[0], ground[1]])
+            fp = self.vehicle_footprint
+            if fp is not None and fp[0] <= pos2[0] <= fp[1] and fp[2] <= pos2[1] <= fp[3]:
+                continue
             if any(np.hypot(pos2[0] - a[0], pos2[1] - a[1])
                    < self.camera_only_merge_distance for a in accepted):
                 continue

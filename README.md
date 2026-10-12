@@ -123,16 +123,31 @@ Detection topics (`/lidar/objects`, `/safety_zone/*`, `/yolo/*`) are
 
 ## Requirements
 
-ROS 2 Humble, PCL (`ros-humble-pcl-ros`), CUDA toolkit (CUDA node),
+ROS 2 Humble or Lyrical, PCL (`libpcl-dev`), `pcl_conversions`, CUDA toolkit (CUDA node, optional),
 `ros-humble-vision-msgs` + Python `opencv` + `numpy` (fusion node),
 `lidar_filter` package (https://github.com/Gunreben/ROS2-Pointcloud-Filter-Tools),
 `yolo_multi_cam` for the camera branch.
+
+Also builds on ROS 2 Lyrical: `pcl_ros` is no longer needed (it was only
+included, never used), and `ament_target_dependencies` (removed in
+Lyrical) is replaced by a small `link_ros_deps` helper. CUDA is optional:
+without `nvcc` only the CPU node and the fusion node are built.
 
 ```bash
 colcon build --packages-select obstacle_detection
 ```
 
 ## Changelog
+
+### 0.2.1 (2026-10)
+- Builds without CUDA (CPU node + fusion only) and on ROS 2 Lyrical;
+  dropped the unused `pcl_ros` dependency; sm_120 (Blackwell) added to
+  the CUDA architectures when nvcc >= 12.8.
+- Fusion: no ground projection for bboxes truncated at the image bottom
+  (`truncated_bottom_px`), camera-only objects inside the vehicle box are
+  dropped (`vehicle_footprint`) — both removed ghost "persons" on the
+  hitch seen by rear_mid (false red alerts). `camera_only_merge_distance`
+  1.0 -> 2.0 m (cross-camera duplicates).
 
 ### 0.2.0 (2026-07)
 - Cluster nodes publish `TrackedObjectArray` on `/lidar/objects`;

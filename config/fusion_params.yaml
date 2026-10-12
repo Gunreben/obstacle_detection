@@ -57,12 +57,20 @@ detection_fusion_node:
 
     # Camera-only detections closer than this (m) to another output
     # object are merged away (overlapping-camera dedup).
-    camera_only_merge_distance: 1.0
+    # Ground projections of the same person from two cameras land 1-2 m
+    # apart (flat-ground assumption, bbox bottom jitter).
+    camera_only_merge_distance: 2.0
 
     # When a camera detection matches no lidar object, place it by
     # intersecting the bbox bottom-center ray with the ground plane.
     enable_ground_projection_fallback: true
     ground_z: 0.0
+
+    # No ground projection for bboxes touching the image bottom (truncated).
+    truncated_bottom_px: 4
+    # Vehicle box [x_min, x_max, y_min, y_max] (same as the lidar_filter
+    # self-filter box): camera-only objects inside are self-detections.
+    vehicle_footprint: [-1.6, 1.6, -2.4, 2.8]
 
     # Safety zones in the target frame.
     # Deployment convention: x = lateral, y = forward (mesh-derived TF

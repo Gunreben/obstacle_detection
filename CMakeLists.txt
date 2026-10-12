@@ -1,28 +1,54 @@
 cmake_minimum_required(VERSION 3.18)
-project(obstacle_detection LANGUAGES C CXX CUDA)
+project(obstacle_detection LANGUAGES C CXX)
+
+# CUDA is optional: without nvcc only the CPU node (+ fusion) is built.
+include(CheckLanguage)
+check_language(CUDA)
+if(CMAKE_CUDA_COMPILER)
+  enable_language(CUDA)
+  set(HAVE_CUDA TRUE)
+else()
+  set(HAVE_CUDA FALSE)
+  message(STATUS "No CUDA compiler found - building the CPU node only")
+endif()
 
 # ── Compiler options ─────────────────────────────────────────────────────────
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# sm_87 = Jetson AGX Orin, sm_89 = RTX 4090 (Ada); 75/80/86 for
+# sm_87 = Jetson AGX Orin, sm_89 = RTX 4090 (Ada), sm_120 = RTX PRO 6000
+# (Blackwell, needs CUDA >= 12.8); 75/80/86 for
 # Turing/Ampere portability. Plain set (no CACHE): project() already
 # initialized the cache entry to nvcc's default (sm_52), and a CACHE set
 # cannot override an existing entry — the sm_52-only build crashes at
 # runtime on every real target.
 set(CMAKE_CUDA_ARCHITECTURES "75;80;86;87;89")
+if(HAVE_CUDA AND CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.8)
+  list(APPEND CMAKE_CUDA_ARCHITECTURES 120)
+endif()
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CXX_STANDARD  17)
 
 # ── ROS 2 dependencies ───────────────────────────────────────────────────────
 find_package(ament_cmake        REQUIRED)
+
+# ament_target_dependencies() was removed in Lyrical: link the exported
+# targets (plus include dirs, for older header-only exports) directly.
+function(link_ros_deps target)
+  foreach(dep ${ARGN})
+    if(dep STREQUAL "PCL")
+      continue()
+    endif()
+    target_link_libraries(${target} ${${dep}_TARGETS} ${${dep}_LIBRARIES})
+    target_include_directories(${target} PRIVATE ${${dep}_INCLUDE_DIRS})
+  endforeach()
+endfunction()
 find_package(rclcpp             REQUIRED)
 find_package(sensor_msgs        REQUIRED)
 find_package(std_msgs           REQUIRED)
 find_package(geometry_msgs      REQUIRED)
 find_package(pcl_conversions    REQUIRED)
-find_package(pcl_ros            REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(tf2                REQUIRED)
 find_package(tf2_ros            REQUIRED)
@@ -45,11 +71,13 @@ rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typ
 find_package(PCL REQUIRED COMPONENTS common io filters segmentation)
 
 # ── CUDA Toolkit (modern CMake target-based) ─────────────────────────────────
-find_package(CUDAToolkit REQUIRED)
+if(HAVE_CUDA)
+  find_package(CUDAToolkit REQUIRED)
+endif()
 
 # ── PCL GPU modules (optional – only available when PCL is built with CUDA) ──
 find_package(PCL QUIET COMPONENTS gpu_segmentation gpu_octree gpu_filters)
-if(PCL_FOUND
+if(HAVE_CUDA AND PCL_FOUND
    AND TARGET pcl_gpu_segmentation
    AND TARGET pcl_gpu_octree
    AND TARGET pcl_gpu_filters)
@@ -73,11 +101,12 @@ add_definitions(${PCL_DEFINITIONS})
 # 1. CPU obstacle detection node
 # ============================================================================
 add_executable(obstacle_detection_node src/obstacle_detection_node.cpp)
-ament_target_dependencies(obstacle_detection_node
-  rclcpp sensor_msgs pcl_conversions pcl_ros
+link_ros_deps(obstacle_detection_node
+  rclcpp sensor_msgs pcl_conversions
   visualization_msgs tf2 tf2_ros tf2_sensor_msgs PCL)
 target_link_libraries(obstacle_detection_node ${PCL_LIBRARIES} "${cpp_typesupport_target}")
 
+if(HAVE_CUDA)
 # ============================================================================
 # 2. CUDA cluster library (source-built for this machine's architecture)
 #    Replaces the precompiled ARM binary (lib/libcudacluster.so).
@@ -96,8 +125,8 @@ target_link_libraries(cudacluster
 # 3. CUDA obstacle detection node
 # ============================================================================
 add_executable(obstacle_detection_cuda src/obstacle_detection_cuda.cpp)
-ament_target_dependencies(obstacle_detection_cuda
-  rclcpp sensor_msgs pcl_conversions pcl_ros
+link_ros_deps(obstacle_detection_cuda
+  rclcpp sensor_msgs pcl_conversions
   visualization_msgs tf2 tf2_ros tf2_sensor_msgs PCL)
 target_link_libraries(obstacle_detection_cuda
   ${PCL_LIBRARIES}
@@ -105,13 +134,15 @@ target_link_libraries(obstacle_detection_cuda
   CUDA::cudart
   "${cpp_typesupport_target}")
 
+endif()
+
 # ============================================================================
 # 4. PCL-GPU obstacle detection node (optional)
 # ============================================================================
 if(HAVE_PCL_GPU)
   add_executable(obstacle_detection_gpu src/obstacle_detection_node_gpu.cpp)
-  ament_target_dependencies(obstacle_detection_gpu
-    rclcpp sensor_msgs pcl_conversions pcl_ros
+  link_ros_deps(obstacle_detection_gpu
+    rclcpp sensor_msgs pcl_conversions
     visualization_msgs tf2 tf2_ros tf2_sensor_msgs PCL)
   target_link_libraries(obstacle_detection_gpu
     ${PCL_LIBRARIES}
@@ -123,16 +154,18 @@ endif()
 # ============================================================================
 # Install
 # ============================================================================
-set_target_properties(obstacle_detection_cuda PROPERTIES
-  INSTALL_RPATH "$ORIGIN"
-  BUILD_WITH_INSTALL_RPATH TRUE)
-
-set(INSTALL_TARGETS obstacle_detection_node obstacle_detection_cuda)
+set(INSTALL_TARGETS obstacle_detection_node)
+if(HAVE_CUDA)
+  set_target_properties(obstacle_detection_cuda PROPERTIES
+    INSTALL_RPATH "$ORIGIN"
+    BUILD_WITH_INSTALL_RPATH TRUE)
+  list(APPEND INSTALL_TARGETS obstacle_detection_cuda cudacluster)
+endif()
 if(HAVE_PCL_GPU)
   list(APPEND INSTALL_TARGETS obstacle_detection_gpu)
 endif()
 
-install(TARGETS ${INSTALL_TARGETS} cudacluster
+install(TARGETS ${INSTALL_TARGETS}
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch config

@@ -28,7 +28,6 @@ without the planned HIL verification).
 
 import functools
 import math
-import time
 from dataclasses import dataclass, field
 
 import cv2
@@ -235,7 +234,7 @@ class CameraState:
     name: str
     frame_id: str | None = None          # from Detection2DArray header
     detections: list[CameraDetection] = field(default_factory=list)
-    last_update: float = 0.0             # monotonic reception time
+    last_update: float = 0.0             # node-clock reception time
     # intrinsics
     K: np.ndarray | None = None
     D: np.ndarray | None = None
@@ -421,8 +420,13 @@ class DetectionFusionNode(Node):
         cam.img_w = msg.width
         cam.img_h = msg.height
 
+    def _now(self) -> float:
+        """Node clock in seconds: follows /clock with use_sim_time, so
+        timeouts / smoothing stay correct when a bag is replayed slower."""
+        return self.get_clock().now().nanoseconds * 1e-9
+
     def _ground_cb(self, msg: PointCloud2):
-        now = time.monotonic()
+        now = self._now()
         if now - self._ground_last < self.get_parameter("ground_update_period").value:
             return
         self._ground_last = now
@@ -439,7 +443,7 @@ class DetectionFusionNode(Node):
         cam = self._cameras[camera_name]
         if msg.header.frame_id:
             cam.frame_id = msg.header.frame_id
-        cam.last_update = time.monotonic()
+        cam.last_update = self._now()
         cam.detections = [
             CameraDetection(
                 class_name=det.results[0].hypothesis.class_id,
@@ -465,7 +469,7 @@ class DetectionFusionNode(Node):
 
         fused = self._fuse(list(msg.objects), msg.header.frame_id)
         if self.tracker is not None:
-            fused = self.tracker.update(fused, time.monotonic())
+            fused = self.tracker.update(fused, self._now())
 
         out = TrackedObjectArray()
         out.header.stamp = msg.header.stamp
@@ -482,7 +486,7 @@ class DetectionFusionNode(Node):
 
     def _fuse(self, lidar_objs: list[TrackedObject], lidar_frame: str
               ) -> list[TrackedObject]:
-        now = time.monotonic()
+        now = self._now()
         centers = np.array(
             [[o.position.x, o.position.y, o.position.z] for o in lidar_objs],
             dtype=np.float64,

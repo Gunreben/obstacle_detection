@@ -43,6 +43,7 @@ from rclpy.qos import (
 from geometry_msgs.msg import Point, Vector3
 from sensor_msgs.msg import CameraInfo, PointCloud2
 from vision_msgs.msg import Detection2DArray
+from foxglove_msgs.msg import Color, ImageAnnotations, Point2, PointsAnnotation, TextAnnotation
 
 from obstacle_detection.msg import (
     SafetyAlert,
@@ -325,6 +326,18 @@ class DetectionFusionNode(Node):
                 f"info={self._camera_info_topics[cam.name]}"
             )
 
+        # Foxglove image overlays: per YOLO frame, the boxes colored by the
+        # safety zone of their 3D position + distance label
+        self.declare_parameter("publish_annotations", True)
+        self.declare_parameter("annotation_topic_prefix", "/safety_zone/annotations/")
+        self._last_lidar: tuple[list[TrackedObject], str] | None = None
+        self._ann_pubs = {}
+        if self.get_parameter("publish_annotations").value:
+            prefix = self.get_parameter("annotation_topic_prefix").value
+            for cam in self._cameras.values():
+                self._ann_pubs[cam.name] = self.create_publisher(
+                    ImageAnnotations, f"{prefix}{cam.name}", 10)
+
         self.det_pub = self.create_publisher(TrackedObjectArray, self.output_topic, 10)
         self.alert_pub = self.create_publisher(SafetyAlertArray, self.alert_topic, 10)
 
@@ -375,7 +388,7 @@ class DetectionFusionNode(Node):
             v2 = self.get_parameter(f"{prefix}.camera_info_topic_v2").value
             topics = [single] if single else [t for t in dict.fromkeys([v2, v1]) if t]
             if not topics:
-                self.get_logger().warn(f"Camera '{name}': no camera_info topic configured")
+                self.get_logger().warning(f"Camera '{name}': no camera_info topic configured")
             self._cameras[name] = CameraState(name=name)
             self._camera_info_topics[name] = topics
 
@@ -456,17 +469,20 @@ class DetectionFusionNode(Node):
             for det in msg.detections
             if det.results
         ]
+        if camera_name in self._ann_pubs:
+            self._ann_pubs[camera_name].publish(self._annotate(cam, msg.header.stamp))
 
     def _lidar_cb(self, msg: TrackedObjectArray):
         if msg.header.frame_id != self.target_frame and \
                 msg.header.frame_id not in self._warned_frames:
             self._warned_frames.add(msg.header.frame_id)
-            self.get_logger().warn(
+            self.get_logger().warning(
                 f"Lidar objects arrive in frame '{msg.header.frame_id}' but "
                 f"target_frame is '{self.target_frame}' — using the lidar frame. "
                 "Safety zones are checked in the lidar objects' frame."
             )
 
+        self._last_lidar = (list(msg.objects), msg.header.frame_id)
         fused = self._fuse(list(msg.objects), msg.header.frame_id)
         if self.tracker is not None:
             fused = self.tracker.update(fused, self._now())
@@ -504,7 +520,7 @@ class DetectionFusionNode(Node):
             if not cam.detections:
                 continue
             if cam.K is None or cam.frame_id is None:
-                self.get_logger().warn(
+                self.get_logger().warning(
                     f"Camera '{cam.name}': detections but no CameraInfo/frame yet",
                     throttle_duration_sec=5.0,
                 )
@@ -617,6 +633,74 @@ class DetectionFusionNode(Node):
         return fused
 
     # ------------------------------------------------------------------
+    # Image annotations (Foxglove)
+    # ------------------------------------------------------------------
+
+    _ZONE_COLORS = {"red": (1.0, 0.15, 0.15), "yellow": (1.0, 0.8, 0.0),
+                    None: (0.2, 0.9, 0.3)}
+
+    def _annotate(self, cam: CameraState, stamp) -> ImageAnnotations:
+        """Boxes of this camera's latest detections, colored by the safety
+        zone of their 3D position: the lidar object they hit in the image
+        (same pixel association as _fuse, against the latest lidar objects)
+        or else the ground-projected point. Label: class, distance, source."""
+        ann = ImageAnnotations()
+        ann.timestamp = stamp
+        positions: list[tuple[np.ndarray | None, str]] = \
+            [(None, "")] * len(cam.detections)
+        if self._last_lidar and cam.K is not None and cam.frame_id:
+            objs, frame = self._last_lidar
+            transform = self._lookup_transform(cam.frame_id, frame)
+            if transform is not None:
+                rot, trans = self._tf_to_rot_trans(transform)
+                centers = np.array([[o.position.x, o.position.y, o.position.z]
+                                    for o in objs], np.float64).reshape(-1, 3)
+                cam_pts = (rot @ centers.T).T + trans
+                uv, valid = self._project(cam, cam_pts)
+                for j, det in enumerate(cam.detections):
+                    m = self.bbox_margin
+                    hit = [i for i in range(len(objs)) if valid[i]
+                           and det.cx - det.w / 2 - m <= uv[i, 0] <= det.cx + det.w / 2 + m
+                           and det.cy - det.h / 2 - m <= uv[i, 1] <= det.cy + det.h / 2 + m]
+                    if hit:
+                        i = min(hit, key=lambda k: cam_pts[k, 2])
+                        positions[j] = (centers[i], "lidar")
+                        continue
+                    truncated = cam.img_h and (det.cy + det.h / 2.0
+                                               >= cam.img_h - self.truncated_bottom_px)
+                    if self.enable_ground_projection_fallback and not truncated:
+                        ground = self._ground_position(det, cam, rot.T, -rot.T @ trans)
+                        if ground is not None:
+                            positions[j] = (ground, "cam")
+        scale = max(cam.img_w, 1280) / 1280.0
+        for det, (pos, src) in zip(cam.detections, positions):
+            zone = self._point_in_zone(pos[0], pos[1]) if pos is not None else None
+            r, g, b = self._ZONE_COLORS[zone]
+            x0, y0 = det.cx - det.w / 2, det.cy - det.h / 2
+            x1, y1 = det.cx + det.w / 2, det.cy + det.h / 2
+            box = PointsAnnotation()
+            box.timestamp = stamp
+            box.type = PointsAnnotation.LINE_LOOP
+            box.points = [Point2(x=float(x), y=float(y))
+                          for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
+            box.outline_color = Color(r=r, g=g, b=b, a=1.0)
+            box.thickness = 4.0 * scale
+            ann.points.append(box)
+            label = det.class_name
+            if pos is not None:
+                label += f" {math.hypot(pos[0], pos[1]):.1f} m"
+                label += "" if src == "lidar" else " (cam)"
+            text = TextAnnotation()
+            text.timestamp = stamp
+            text.position = Point2(x=float(x0), y=float(max(y0 - 30 * scale, 0)))
+            text.text = label
+            text.font_size = 24.0 * scale
+            text.text_color = Color(r=1.0, g=1.0, b=1.0, a=1.0)
+            text.background_color = Color(r=r * 0.6, g=g * 0.6, b=b * 0.6, a=0.85)
+            ann.texts.append(text)
+        return ann
+
+    # ------------------------------------------------------------------
     # Projection helpers
     # ------------------------------------------------------------------
 
@@ -704,7 +788,7 @@ class DetectionFusionNode(Node):
             tf2_ros.ConnectivityException,
             tf2_ros.ExtrapolationException,
         ) as e:
-            self.get_logger().warn(
+            self.get_logger().warning(
                 f"TF lookup {source_frame} -> {target_frame}: {e}",
                 throttle_duration_sec=2.0,
             )
